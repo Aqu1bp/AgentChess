@@ -1,0 +1,1362 @@
+"""
+AgentChess Perception Layer
+
+Provides ground-truth board facts via python-chess. NO tactical scanning —
+agents must find tactics themselves. This layer only answers factual questions:
+where are pieces, what attacks what, are moves legal.
+
+CLI usage:
+    python3 perception.py state --fen "..."
+    python3 perception.py legal --fen "..."
+    python3 perception.py simulate --fen "..." --move Nf3 --move Nc6
+    python3 perception.py query --fen "..." --square e4
+    python3 perception.py state --fen "..." --json
+"""
+
+import argparse
+import json
+import re
+import sys
+from typing import Optional
+
+import chess
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+PIECE_VALUES = {
+    chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3,
+    chess.ROOK: 5, chess.QUEEN: 9, chess.KING: 0,
+}
+
+PIECE_NAMES = {
+    chess.PAWN: "pawn", chess.KNIGHT: "knight", chess.BISHOP: "bishop",
+    chess.ROOK: "rook", chess.QUEEN: "queen", chess.KING: "king",
+}
+
+PIECE_SYMBOLS = {
+    chess.PAWN: "", chess.KNIGHT: "N", chess.BISHOP: "B",
+    chess.ROOK: "R", chess.QUEEN: "Q", chess.KING: "K",
+}
+
+UCI_PATTERN = re.compile(r"^[a-h][1-8][a-h][1-8][qrbn]?$")
+
+
+def piece_label(piece: chess.Piece) -> str:
+    """e.g. 'white knight' or 'black pawn'."""
+    color = "white" if piece.color == chess.WHITE else "black"
+    return f"{color} {PIECE_NAMES[piece.piece_type]}"
+
+
+def square_name(sq: int) -> str:
+    return chess.square_name(sq)
+
+
+def piece_at_label(board: chess.Board, sq: int) -> str:
+    """Short label like 'Nb1' or 'pe4'."""
+    piece = board.piece_at(sq)
+    if piece is None:
+        return "empty"
+    sym = PIECE_SYMBOLS[piece.piece_type]
+    if piece.piece_type == chess.PAWN:
+        sym = ""
+    return f"{sym}{square_name(sq)}"
+
+
+def get_legal_attackers(board: chess.Board, sq: int, color: chess.Color) -> list[int]:
+    """
+    Get pieces of `color` that can legally capture on `sq`.
+    Handles pins correctly by using a hypothetical board where it's the attacker's turn,
+    with an enemy piece placed on the target square to check legal captures.
+    """
+    # Create hypothetical board where it's the attacker's turn
+    hypo = board.copy()
+    # Place an enemy piece on the target so captures are possible
+    target_piece = hypo.piece_at(sq)
+    enemy_color = not color
+    if target_piece is None or target_piece.color == color:
+        # Place a dummy enemy pawn so we can check legal captures onto this square
+        hypo.set_piece_at(sq, chess.Piece(chess.PAWN, enemy_color))
+    hypo.turn = color
+    # Clear en passant to avoid false positives on hypothetical board
+    hypo.ep_square = board.ep_square if board.turn == color else None
+
+    attackers = []
+    for move in hypo.legal_moves:
+        if move.to_square == sq:
+            piece = hypo.piece_at(move.from_square)
+            if piece and piece.color == color:
+                attackers.append(move.from_square)
+    return attackers
+
+
+def get_defenders(board: chess.Board, sq: int, color: chess.Color) -> list[int]:
+    """
+    Get pieces of `color` that defend `sq`.
+    Uses a hypothetical capture approach to correctly handle pins:
+    place an enemy piece on the square, then check legal captures.
+    """
+    piece = board.piece_at(sq)
+    if piece is None or piece.color != color:
+        return []
+
+    # Create hypothetical board with an enemy pawn on the square
+    hypo = board.copy()
+    enemy_color = not color
+    hypo.set_piece_at(sq, chess.Piece(chess.PAWN, enemy_color))
+    # Set it to be the defender's turn
+    hypo.turn = color
+
+    defenders = []
+    for move in hypo.legal_moves:
+        if move.to_square == sq:
+            defenders.append(move.from_square)
+    return defenders
+
+
+def material_count(board: chess.Board, color: chess.Color) -> int:
+    total = 0
+    for pt in [chess.PAWN, chess.KNIGHT, chess.BISHOP, chess.ROOK, chess.QUEEN]:
+        total += len(board.pieces(pt, color)) * PIECE_VALUES[pt]
+    return total
+
+
+def detect_game_phase(board: chess.Board) -> str:
+    """Classify position as opening, middlegame, or endgame."""
+    total_material = material_count(board, chess.WHITE) + material_count(board, chess.BLACK)
+    queens = len(board.pieces(chess.QUEEN, chess.WHITE)) + len(board.pieces(chess.QUEEN, chess.BLACK))
+    minor_major = (
+        len(board.pieces(chess.KNIGHT, chess.WHITE)) + len(board.pieces(chess.KNIGHT, chess.BLACK))
+        + len(board.pieces(chess.BISHOP, chess.WHITE)) + len(board.pieces(chess.BISHOP, chess.BLACK))
+        + len(board.pieces(chess.ROOK, chess.WHITE)) + len(board.pieces(chess.ROOK, chess.BLACK))
+    )
+    if total_material <= 26 or (queens == 0 and minor_major <= 4):
+        return "endgame"
+    if board.fullmove_number <= 10:
+        return "opening"
+    return "middlegame"
+
+
+def pawn_structure(board: chess.Board, color: chess.Color) -> dict:
+    """Analyze pawn structure: isolated, doubled, passed, connected pawns."""
+    pawns = list(board.pieces(chess.PAWN, color))
+    pawn_files = [chess.square_file(sq) for sq in pawns]
+
+    isolated = []
+    doubled = []
+    passed = []
+    connected = []
+    backward = []
+
+    for sq in pawns:
+        f = chess.square_file(sq)
+        r = chess.square_rank(sq)
+        sq_name = square_name(sq)
+
+        # Doubled: another friendly pawn on same file
+        same_file = [s for s in pawns if chess.square_file(s) == f and s != sq]
+        if same_file:
+            doubled.append(sq_name)
+
+        # Isolated: no friendly pawns on adjacent files
+        adj_files = [af for af in [f - 1, f + 1] if 0 <= af <= 7]
+        has_neighbor = any(af in pawn_files for af in adj_files)
+        if not has_neighbor:
+            isolated.append(sq_name)
+
+        # Connected: friendly pawn on adjacent file AND adjacent rank
+        is_connected = False
+        for other_sq in pawns:
+            if other_sq == sq:
+                continue
+            of = chess.square_file(other_sq)
+            orank = chess.square_rank(other_sq)
+            if abs(of - f) == 1 and abs(orank - r) <= 1:
+                is_connected = True
+                break
+        if is_connected:
+            connected.append(sq_name)
+
+        # Passed: no enemy pawns on same or adjacent files ahead
+        enemy_pawns = list(board.pieces(chess.PAWN, not color))
+        is_passed = True
+        for ep in enemy_pawns:
+            ef = chess.square_file(ep)
+            er = chess.square_rank(ep)
+            if abs(ef - f) <= 1:
+                if color == chess.WHITE and er > r:
+                    is_passed = False
+                    break
+                elif color == chess.BLACK and er < r:
+                    is_passed = False
+                    break
+        if is_passed:
+            passed.append(sq_name)
+
+        # Backward: no friendly pawns on adjacent files behind/equal to support advance,
+        # AND the stop square (one ahead) is controlled by an enemy pawn
+        if not isolated:  # isolated pawns are already flagged
+            friendly_behind = False
+            for other_sq in pawns:
+                if other_sq == sq:
+                    continue
+                of = chess.square_file(other_sq)
+                orank = chess.square_rank(other_sq)
+                if abs(of - f) == 1:
+                    if color == chess.WHITE and orank <= r:
+                        friendly_behind = True
+                        break
+                    elif color == chess.BLACK and orank >= r:
+                        friendly_behind = True
+                        break
+            if not friendly_behind:
+                # Check if stop square is controlled by enemy pawn
+                stop_rank = r + 1 if color == chess.WHITE else r - 1
+                if 0 <= stop_rank <= 7:
+                    stop_sq = chess.square(f, stop_rank)
+                    enemy_controls_stop = False
+                    for ep in enemy_pawns:
+                        ef = chess.square_file(ep)
+                        er = chess.square_rank(ep)
+                        if abs(ef - f) == 1:
+                            if color == chess.WHITE and er == stop_rank + 1:
+                                enemy_controls_stop = True
+                                break
+                            elif color == chess.BLACK and er == stop_rank - 1:
+                                enemy_controls_stop = True
+                                break
+                    if enemy_controls_stop:
+                        backward.append(sq_name)
+
+    return {
+        "squares": [square_name(sq) for sq in pawns],
+        "isolated": isolated,
+        "doubled": doubled,
+        "passed": passed,
+        "connected": connected,
+        "backward": backward,
+    }
+
+
+def parse_move(board: chess.Board, move_str: str) -> Optional[chess.Move]:
+    """Parse a move string as UCI or SAN. Returns None if invalid."""
+    move_str = move_str.strip()
+    # Try UCI first
+    if UCI_PATTERN.match(move_str):
+        move = chess.Move.from_uci(move_str)
+        if move in board.legal_moves:
+            return move
+    # Try SAN
+    try:
+        return board.parse_san(move_str)
+    except (chess.InvalidMoveError, chess.IllegalMoveError, chess.AmbiguousMoveError):
+        return None
+
+
+def capture_info(board: chess.Board, move: chess.Move) -> tuple[str | None, int]:
+    """Return captured piece label and value, including en passant."""
+    if not board.is_capture(move):
+        return None, 0
+
+    captured_piece = board.piece_at(move.to_square)
+    if captured_piece:
+        return piece_label(captured_piece), PIECE_VALUES.get(captured_piece.piece_type, 0)
+
+    if board.is_en_passant(move):
+        return "pawn (en passant)", PIECE_VALUES[chess.PAWN]
+
+    return "unknown piece", 0
+
+
+def material_balance(board: chess.Board, color: chess.Color) -> int:
+    """Material balance from `color`'s perspective."""
+    return material_count(board, color) - material_count(board, not color)
+
+
+def collect_hanging_pieces(board: chess.Board, color: chess.Color, *, min_value: int = 0) -> list[dict]:
+    """Pieces for `color` that are attacked and undefended."""
+    pieces = []
+    enemy = not color
+    for pt in [chess.QUEEN, chess.ROOK, chess.BISHOP, chess.KNIGHT, chess.PAWN]:
+        value = PIECE_VALUES[pt]
+        if value < min_value:
+            continue
+        for sq in sorted(board.pieces(pt, color)):
+            attackers = get_legal_attackers(board, sq, enemy)
+            defenders = get_defenders(board, sq, color)
+            if attackers and not defenders:
+                pieces.append({
+                    "square": square_name(sq),
+                    "piece": piece_label(board.piece_at(sq)),
+                    "value": value,
+                    "attackers": [piece_at_label(board, a) for a in attackers],
+                    "defenders": [piece_at_label(board, d) for d in defenders],
+                })
+    return pieces
+
+
+def safe_moves_for_piece(board: chess.Board, from_square: int, color: chess.Color) -> list[dict]:
+    """Legal moves for a piece that land on squares not attacked by the opponent."""
+    enemy = not color
+    safe_moves = []
+    for move in board.legal_moves:
+        if move.from_square != from_square:
+            continue
+        next_board = board.copy()
+        next_board.push(move)
+        piece = next_board.piece_at(move.to_square)
+        if piece is None or piece.color != color:
+            continue
+        attackers = get_legal_attackers(next_board, move.to_square, enemy)
+        if attackers:
+            continue
+        safe_moves.append({
+            "san": board.san(move),
+            "uci": move.uci(),
+            "square": square_name(move.to_square),
+        })
+    return safe_moves
+
+
+def best_immediate_recapture_balance(board: chess.Board, color: chess.Color) -> int:
+    """Best one-ply capture balance `color` can reach from the current position."""
+    best = material_balance(board, color)
+    for move in board.legal_moves:
+        if not board.is_capture(move):
+            continue
+        next_board = board.copy()
+        next_board.push(move)
+        best = max(best, material_balance(next_board, color))
+    return best
+
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+
+def cmd_state(board: chess.Board, as_json: bool = False) -> str | dict:
+    """Full board state description."""
+    phase = detect_game_phase(board)
+    white_mat = material_count(board, chess.WHITE)
+    black_mat = material_count(board, chess.BLACK)
+    mat_diff = white_mat - black_mat
+
+    # Castling
+    castling = []
+    if board.has_kingside_castling_rights(chess.WHITE):
+        castling.append("White O-O")
+    if board.has_queenside_castling_rights(chess.WHITE):
+        castling.append("White O-O-O")
+    if board.has_kingside_castling_rights(chess.BLACK):
+        castling.append("Black O-O")
+    if board.has_queenside_castling_rights(chess.BLACK):
+        castling.append("Black O-O-O")
+
+    # En passant
+    ep_square = board.ep_square
+
+    # Pieces with attack/defense info
+    def describe_pieces(color: chess.Color) -> list[dict]:
+        pieces_info = []
+        enemy = not color
+        for pt in [chess.KING, chess.QUEEN, chess.ROOK, chess.BISHOP, chess.KNIGHT, chess.PAWN]:
+            for sq in sorted(board.pieces(pt, color)):
+                attackers = get_legal_attackers(board, sq, enemy)
+                defenders = get_defenders(board, sq, color)
+                info = {
+                    "square": square_name(sq),
+                    "piece": PIECE_NAMES[pt],
+                    "attackers": [piece_at_label(board, a) for a in attackers],
+                    "defenders": [piece_at_label(board, d) for d in defenders],
+                }
+                # Add pawn shelter for kings
+                if pt == chess.KING:
+                    shelter = []
+                    king_file = chess.square_file(sq)
+                    king_rank = chess.square_rank(sq)
+                    shelter_dir = 1 if color == chess.WHITE else -1
+                    for df in [-1, 0, 1]:
+                        sf = king_file + df
+                        if 0 <= sf <= 7:
+                            for dr in [1, 2]:
+                                sr = king_rank + shelter_dir * dr
+                                if 0 <= sr <= 7:
+                                    shelter_sq = chess.square(sf, sr)
+                                    p = board.piece_at(shelter_sq)
+                                    if p and p.piece_type == chess.PAWN and p.color == color:
+                                        shelter.append(square_name(shelter_sq))
+                    if shelter:
+                        info["pawn_shelter"] = shelter
+                pieces_info.append(info)
+        return pieces_info
+
+    white_pieces = describe_pieces(chess.WHITE)
+    black_pieces = describe_pieces(chess.BLACK)
+
+    # Legal moves grouped
+    legal_moves = list(board.legal_moves)
+    captures = []
+    checks = []
+    other = []
+    for move in legal_moves:
+        san = board.san(move)
+        is_capture = board.is_capture(move)
+        board.push(move)
+        is_check = board.is_check()
+        board.pop()
+        if is_check:
+            checks.append(san)
+        if is_capture:
+            captures.append(san)
+        if not is_capture and not is_check:
+            other.append(san)
+
+    w_pawn = pawn_structure(board, chess.WHITE)
+    b_pawn = pawn_structure(board, chess.BLACK)
+
+    turn = "white" if board.turn == chess.WHITE else "black"
+
+    data = {
+        "fen": board.fen(),
+        "turn": turn,
+        "fullmove": board.fullmove_number,
+        "halfmove_clock": board.halfmove_clock,
+        "phase": phase,
+        "material": {"white": white_mat, "black": black_mat, "diff": mat_diff},
+        "castling": castling,
+        "en_passant": square_name(ep_square) if ep_square is not None else None,
+        "in_check": board.is_check(),
+        "is_checkmate": board.is_checkmate(),
+        "is_stalemate": board.is_stalemate(),
+        "is_insufficient": board.is_insufficient_material(),
+        "is_fifty_moves": board.can_claim_fifty_moves(),
+        "is_repetition": board.can_claim_threefold_repetition(),
+        "white_pieces": white_pieces,
+        "black_pieces": black_pieces,
+        "white_pawns": w_pawn,
+        "black_pawns": b_pawn,
+        "legal_move_count": len(legal_moves),
+        "captures": captures,
+        "checks": checks,
+        "other_moves": other,
+    }
+
+    if as_json:
+        return data
+
+    # Natural language output
+    lines = []
+    lines.append("=== BOARD STATE ===")
+    mat_desc = f"White {white_mat} vs Black {black_mat}"
+    if mat_diff > 0:
+        mat_desc += f" (White +{mat_diff})"
+    elif mat_diff < 0:
+        mat_desc += f" (Black +{-mat_diff})"
+    else:
+        mat_desc += " (equal)"
+
+    lines.append(f"Turn: {turn.capitalize()} | Move: {board.fullmove_number} | Phase: {phase.capitalize()}")
+    lines.append(f"Material: {mat_desc}")
+    cast_str = ", ".join(castling) if castling else "none"
+    lines.append(f"Castling: {cast_str}")
+    if ep_square is not None:
+        lines.append(f"En passant: {square_name(ep_square)}")
+    if board.is_check():
+        lines.append("*** IN CHECK ***")
+
+    for color_name, pieces in [("WHITE", white_pieces), ("BLACK", black_pieces)]:
+        lines.append(f"\n{color_name} PIECES:")
+        for p in pieces:
+            atk = ", ".join(p["attackers"]) if p["attackers"] else "none"
+            dfn = ", ".join(p["defenders"]) if p["defenders"] else "none"
+            shelter_str = ""
+            if "pawn_shelter" in p:
+                shelter_str = f" | pawn shelter: {', '.join(p['pawn_shelter'])}"
+            lines.append(f"  {p['piece'].capitalize()} {p['square']} | attacked by: {atk} | defended by: {dfn}{shelter_str}")
+
+    for label, pdata in [("WHITE PAWNS", w_pawn), ("BLACK PAWNS", b_pawn)]:
+        lines.append(f"\n{label}: {', '.join(pdata['squares']) or 'none'}")
+        if pdata["isolated"]:
+            lines.append(f"  Isolated: {', '.join(pdata['isolated'])}")
+        if pdata["doubled"]:
+            lines.append(f"  Doubled: {', '.join(pdata['doubled'])}")
+        if pdata["passed"]:
+            lines.append(f"  Passed: {', '.join(pdata['passed'])}")
+        if pdata["connected"]:
+            lines.append(f"  Connected: {', '.join(pdata['connected'])}")
+        if pdata["backward"]:
+            lines.append(f"  Backward: {', '.join(pdata['backward'])}")
+
+    lines.append(f"\nLEGAL MOVES ({len(legal_moves)}):")
+    if captures:
+        lines.append(f"  Captures: {', '.join(captures)}")
+    if checks:
+        lines.append(f"  Checks: {', '.join(checks)}")
+    if other:
+        lines.append(f"  Other: {', '.join(other)}")
+
+    return "\n".join(lines)
+
+
+def cmd_legal(board: chess.Board, as_json: bool = False) -> str | dict:
+    """List all legal moves with SAN and UCI."""
+    moves = []
+    for move in board.legal_moves:
+        san = board.san(move)
+        uci = move.uci()
+        is_capture = board.is_capture(move)
+        board.push(move)
+        is_check = board.is_check()
+        is_mate = board.is_checkmate()
+        board.pop()
+        moves.append({
+            "san": san,
+            "uci": uci,
+            "capture": is_capture,
+            "check": is_check,
+            "checkmate": is_mate,
+        })
+
+    if as_json:
+        return {"fen": board.fen(), "move_count": len(moves), "moves": moves}
+
+    lines = [f"Legal moves ({len(moves)}):"]
+    for m in moves:
+        flags = []
+        if m["checkmate"]:
+            flags.append("MATE")
+        elif m["check"]:
+            flags.append("check")
+        if m["capture"]:
+            flags.append("capture")
+        flag_str = f" [{', '.join(flags)}]" if flags else ""
+        lines.append(f"  {m['san']} ({m['uci']}){flag_str}")
+    return "\n".join(lines)
+
+
+def cmd_simulate(board: chess.Board, moves: list[str], as_json: bool = False) -> str | dict:
+    """Simulate a sequence of moves and report legality + resulting positions."""
+    sim_board = board.copy()
+    results = []
+    all_legal = True
+
+    for i, move_str in enumerate(moves):
+        move = parse_move(sim_board, move_str)
+        if move is None:
+            results.append({
+                "move_number": i + 1,
+                "input": move_str,
+                "legal": False,
+                "error": f"Illegal or unparseable move: {move_str}",
+                "fen": sim_board.fen(),
+            })
+            all_legal = False
+            break
+
+        san = sim_board.san(move)
+        is_capture = sim_board.is_capture(move)
+        captured = None
+        if is_capture:
+            captured_piece = sim_board.piece_at(move.to_square)
+            if captured_piece:
+                captured = piece_label(captured_piece)
+            elif sim_board.is_en_passant(move):
+                captured = "pawn (en passant)"
+
+        sim_board.push(move)
+        is_check = sim_board.is_check()
+        is_mate = sim_board.is_checkmate()
+
+        results.append({
+            "move_number": i + 1,
+            "input": move_str,
+            "san": san,
+            "uci": move.uci(),
+            "legal": True,
+            "check": is_check,
+            "checkmate": is_mate,
+            "capture": captured,
+            "fen": sim_board.fen(),
+        })
+
+    data = {
+        "starting_fen": board.fen(),
+        "all_legal": all_legal,
+        "moves_checked": len(results),
+        "final_fen": sim_board.fen(),
+        "results": results,
+    }
+
+    if as_json:
+        return data
+
+    lines = [f"Simulating from: {board.fen()}"]
+    for r in results:
+        if r["legal"]:
+            flags = []
+            if r.get("checkmate"):
+                flags.append("CHECKMATE")
+            elif r.get("check"):
+                flags.append("check")
+            if r.get("capture"):
+                flags.append(f"captures {r['capture']}")
+            flag_str = f" ({', '.join(flags)})" if flags else ""
+            prefix = f"{r['move_number']}." if sim_board.turn == chess.WHITE else f"{r['move_number']}..."
+            # Fix prefix based on who played
+            turn_before = chess.WHITE if r["move_number"] % 2 == 1 else chess.BLACK
+            if board.turn == chess.BLACK:
+                turn_before = chess.BLACK if r["move_number"] % 2 == 1 else chess.WHITE
+            lines.append(f"  {r['move_number']}. {r['san']} -- LEGAL{flag_str}")
+            lines.append(f"     Position: {r['fen']}")
+        else:
+            lines.append(f"  {r['move_number']}. {r['input']} -- ILLEGAL: {r['error']}")
+            lines.append(f"     Position (unchanged): {r['fen']}")
+
+    status = "All moves legal" if all_legal else f"Line breaks at move {len(results)}"
+    lines.append(f"\nRESULT: {status}. Final position: {sim_board.fen()}")
+    return "\n".join(lines)
+
+
+def cmd_query(board: chess.Board, square_str: str, as_json: bool = False) -> str | dict:
+    """Query detailed info about a specific square."""
+    try:
+        sq = chess.parse_square(square_str.lower())
+    except ValueError:
+        print(f"Invalid square: {square_str}", file=sys.stderr)
+        sys.exit(1)
+
+    piece = board.piece_at(sq)
+    if piece is None:
+        white_attackers = get_legal_attackers(board, sq, chess.WHITE)
+        black_attackers = get_legal_attackers(board, sq, chess.BLACK)
+        data = {
+            "square": square_str,
+            "piece": None,
+            "white_attackers": [piece_at_label(board, a) for a in white_attackers],
+            "black_attackers": [piece_at_label(board, a) for a in black_attackers],
+        }
+        if as_json:
+            return data
+        wa = ", ".join(data["white_attackers"]) or "none"
+        ba = ", ".join(data["black_attackers"]) or "none"
+        return f"{square_str}: empty\n  White attacks: {wa}\n  Black attacks: {ba}"
+
+    color = piece.color
+    enemy = not color
+    attackers = get_legal_attackers(board, sq, enemy)
+    defenders = get_defenders(board, sq, color)
+
+    # Is it hanging? Attacked and not defended (or attacked by lower value)
+    is_hanging = len(attackers) > 0 and len(defenders) == 0
+    lowest_attacker_value = None
+    if attackers:
+        lowest_attacker_value = min(
+            PIECE_VALUES.get(board.piece_at(a).piece_type, 0) for a in attackers if board.piece_at(a)
+        )
+    piece_value = PIECE_VALUES[piece.piece_type]
+    can_be_taken_by_lower = (
+        lowest_attacker_value is not None and lowest_attacker_value < piece_value
+    )
+
+    data = {
+        "square": square_str,
+        "piece": piece_label(piece),
+        "value": piece_value,
+        "attackers": [piece_at_label(board, a) for a in attackers],
+        "defenders": [piece_at_label(board, d) for d in defenders],
+        "is_hanging": is_hanging,
+        "can_be_taken_by_lower": can_be_taken_by_lower,
+    }
+
+    if as_json:
+        return data
+
+    atk = ", ".join(data["attackers"]) or "none"
+    dfn = ", ".join(data["defenders"]) or "none"
+    lines = [f"{square_str}: {piece_label(piece)} (value: {piece_value})"]
+    lines.append(f"  Attacked by: {atk}")
+    lines.append(f"  Defended by: {dfn}")
+    if is_hanging:
+        lines.append("  *** HANGING (attacked, no defenders) ***")
+    if can_be_taken_by_lower:
+        lines.append(f"  *** Can be captured by lower-value piece (attacker value: {lowest_attacker_value}) ***")
+    return "\n".join(lines)
+
+
+def cmd_validate(board: chess.Board, move_str: str, as_json: bool = False) -> str | dict:
+    """Validate a candidate move against deterministic tactical guardrails."""
+    move = parse_move(board, move_str)
+    if move is None:
+        data = {
+            "input": move_str,
+            "legal": False,
+            "passed": False,
+            "uci": None,
+            "san": None,
+            "resulting_fen": board.fen(),
+            "moved_piece": None,
+            "destination": None,
+            "moved_piece_attackers": [],
+            "moved_piece_defenders": [],
+            "opponent_checks": [],
+            "opponent_captures": [],
+            "quiet_hostile_replies": [],
+            "hard_failures": ["Illegal or unparseable move."],
+            "warnings": [],
+            "explanation": f"{move_str} is illegal or could not be parsed.",
+        }
+        if as_json:
+            return data
+        return (
+            f"Move: {move_str}\n"
+            "Status: FAIL\n"
+            "Hard failures:\n"
+            "  - Illegal or unparseable move.\n"
+            f"Summary: {data['explanation']}"
+        )
+
+    mover_color = board.turn
+    enemy_color = not mover_color
+    mover_name = "white" if mover_color == chess.WHITE else "black"
+    enemy_name = "White" if enemy_color == chess.WHITE else "Black"
+    san = board.san(move)
+    uci = move.uci()
+    moving_piece_before = board.piece_at(move.from_square)
+    capture_label, capture_value = capture_info(board, move)
+
+    post_move = board.copy()
+    post_move.push(move)
+
+    moved_piece_after = post_move.piece_at(move.to_square)
+    destination = square_name(move.to_square)
+    moved_piece_attackers = (
+        [piece_at_label(post_move, a) for a in get_legal_attackers(post_move, move.to_square, enemy_color)]
+        if moved_piece_after else []
+    )
+    moved_piece_defenders = (
+        [piece_at_label(post_move, d) for d in get_defenders(post_move, move.to_square, mover_color)]
+        if moved_piece_after else []
+    )
+
+    baseline_balance = material_balance(post_move, mover_color)
+    baseline_hanging = {
+        piece["square"]: piece for piece in collect_hanging_pieces(post_move, mover_color, min_value=3)
+    }
+
+    opponent_checks = []
+    opponent_captures = []
+    quiet_hostile_replies = []
+    hard_failures: list[str] = []
+    warnings: list[str] = []
+
+    for reply in list(post_move.legal_moves):
+        reply_san = post_move.san(reply)
+        reply_uci = reply.uci()
+        reply_capture_label, reply_capture_value = capture_info(post_move, reply)
+
+        reply_board = post_move.copy()
+        reply_board.push(reply)
+        is_check = reply_board.is_check()
+        is_checkmate = reply_board.is_checkmate()
+
+        if is_check:
+            opponent_checks.append({"san": reply_san, "uci": reply_uci, "checkmate": is_checkmate})
+        if is_check and not is_checkmate:
+            warnings.append(f"{reply_san} gives check.")
+        if is_checkmate:
+            hard_failures.append(f"{reply_san} is immediate checkmate for {enemy_name}.")
+
+        if reply_capture_label:
+            free_win = best_immediate_recapture_balance(reply_board, mover_color) < baseline_balance
+            opponent_captures.append({
+                "san": reply_san,
+                "uci": reply_uci,
+                "captured_piece": reply_capture_label,
+                "captured_value": reply_capture_value,
+                "free_win": free_win,
+            })
+            if free_win:
+                hard_failures.append(
+                    f"{reply_san} wins {reply_capture_label} with no immediate equalizing recapture."
+                )
+            continue
+
+        quiet_threats = []
+        severity = 0
+        safe_moves = []
+        moved_piece_still_present = reply_board.piece_at(move.to_square)
+        if moved_piece_still_present and moved_piece_still_present.color == mover_color:
+            post_reply_attackers = get_legal_attackers(reply_board, move.to_square, enemy_color)
+            if post_reply_attackers:
+                safe_moves = safe_moves_for_piece(reply_board, move.to_square, mover_color)
+                quiet_threats.append(f"attacks the moved piece on {destination}")
+                severity += 3
+                if moved_piece_still_present.piece_type not in (chess.PAWN, chess.KING) and not safe_moves:
+                    hard_failures.append(
+                        f"{reply_san} traps the moved piece on {destination} with 0 safe legal moves."
+                    )
+                else:
+                    warnings.append(f"{reply_san} attacks the moved piece on {destination}.")
+
+        new_hanging = []
+        for piece in collect_hanging_pieces(reply_board, mover_color, min_value=3):
+            if piece["square"] not in baseline_hanging:
+                new_hanging.append(piece)
+        if new_hanging:
+            squares = ", ".join(f"{piece['piece']} on {piece['square']}" for piece in new_hanging)
+            quiet_threats.append(f"creates a new hanging {mover_name} piece: {squares}")
+            severity += max(piece["value"] for piece in new_hanging)
+            warnings.append(f"{reply_san} creates a new hanging {mover_name} piece: {squares}.")
+
+        if quiet_threats:
+            quiet_hostile_replies.append({
+                "san": reply_san,
+                "uci": reply_uci,
+                "threats": quiet_threats,
+                "safe_moves": safe_moves,
+                "severity": severity,
+            })
+
+    def dedupe(items: list[str]) -> list[str]:
+        seen = set()
+        unique = []
+        for item in items:
+            if item in seen:
+                continue
+            seen.add(item)
+            unique.append(item)
+        return unique
+
+    hard_failures = dedupe(hard_failures)
+    warnings = dedupe(warnings)
+    opponent_checks.sort(key=lambda item: item["checkmate"], reverse=True)
+    opponent_captures.sort(key=lambda item: (item["free_win"], item["captured_value"]), reverse=True)
+    quiet_hostile_replies.sort(key=lambda item: item["severity"], reverse=True)
+
+    explanation = (
+        hard_failures[0]
+        if hard_failures else (
+            warnings[0]
+            if warnings else f"{san} passes validation."
+        )
+    )
+
+    data = {
+        "input": move_str,
+        "legal": True,
+        "passed": not hard_failures,
+        "uci": uci,
+        "san": san,
+        "capture": capture_label,
+        "capture_value": capture_value,
+        "resulting_fen": post_move.fen(),
+        "moved_piece": piece_label(moved_piece_after) if moved_piece_after else None,
+        "destination": destination,
+        "moved_piece_attackers": moved_piece_attackers,
+        "moved_piece_defenders": moved_piece_defenders,
+        "opponent_checks": opponent_checks[:5],
+        "opponent_captures": opponent_captures[:5],
+        "quiet_hostile_replies": quiet_hostile_replies[:5],
+        "hard_failures": hard_failures,
+        "warnings": warnings,
+        "explanation": explanation,
+        "material_balance_after_move": baseline_balance,
+        "moving_piece_from": square_name(move.from_square),
+        "moving_piece_before": piece_label(moving_piece_before) if moving_piece_before else None,
+    }
+
+    if as_json:
+        return data
+
+    lines = [
+        f"Move: {san} ({uci})",
+        f"Status: {'PASS' if data['passed'] else 'FAIL'}",
+        f"Moved piece: {data['moved_piece'] or 'none'} to {destination}",
+        f"After the move: attacked by {', '.join(moved_piece_attackers) or 'none'} | defended by {', '.join(moved_piece_defenders) or 'none'}",
+    ]
+    if capture_label:
+        lines.append(f"Capture: {capture_label} (value {capture_value})")
+    if data["opponent_checks"]:
+        lines.append(
+            "Opponent checks: " + ", ".join(
+                f"{item['san']}{'#' if item['checkmate'] else ''}" for item in data["opponent_checks"]
+            )
+        )
+    if data["opponent_captures"]:
+        lines.append(
+            "Opponent captures: " + ", ".join(
+                f"{item['san']} [{item['captured_piece']}{', free' if item['free_win'] else ''}]"
+                for item in data["opponent_captures"]
+            )
+        )
+    if data["quiet_hostile_replies"]:
+        lines.append(
+            "Quiet hostile replies: " + ", ".join(
+                f"{item['san']} ({'; '.join(item['threats'])})"
+                for item in data["quiet_hostile_replies"]
+            )
+        )
+    if hard_failures:
+        lines.append("Hard failures:")
+        for failure in hard_failures:
+            lines.append(f"  - {failure}")
+    if warnings:
+        lines.append("Warnings:")
+        for warning in warnings:
+            lines.append(f"  - {warning}")
+    lines.append(f"Summary: {explanation}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Candidates — pre-computed move consequences for LLM evaluation
+# ---------------------------------------------------------------------------
+
+def _compute_one_candidate(board: chess.Board, move: chess.Move) -> dict:
+    """Compute all facts about one candidate move. Board is NOT modified."""
+    san = board.san(move)
+    uci = move.uci()
+    mover = board.piece_at(move.from_square)
+    mover_value = PIECE_VALUES.get(mover.piece_type, 0) if mover else 0
+    mover_color = mover.color if mover else board.turn
+    enemy_color = not mover_color
+
+    # Capture info (handle en passant)
+    is_capture = board.is_capture(move)
+    captured_value = 0
+    captured_piece = None
+    if is_capture:
+        if board.is_en_passant(move):
+            captured_piece = "pawn"
+            captured_value = 1
+        else:
+            target = board.piece_at(move.to_square)
+            if target:
+                captured_piece = PIECE_NAMES[target.piece_type]
+                captured_value = PIECE_VALUES[target.piece_type]
+
+    # Material before
+    mat_before = material_count(board, chess.WHITE) - material_count(board, chess.BLACK)
+
+    # Push move to analyze consequences
+    board_after = board.copy()
+    board_after.push(move)
+
+    is_check = board_after.is_check()
+    is_checkmate = board_after.is_checkmate()
+
+    # Material after (from white's perspective, delta for the moving side)
+    mat_after = material_count(board_after, chess.WHITE) - material_count(board_after, chess.BLACK)
+    mat_delta = mat_after - mat_before
+    if mover_color == chess.BLACK:
+        mat_delta = -mat_delta  # positive = good for the moving side
+
+    # Piece safety on destination square
+    moved_sq = move.to_square
+    attackers = get_legal_attackers(board_after, moved_sq, enemy_color)
+    defenders = get_defenders(board_after, moved_sq, mover_color)
+    atk_count = len(attackers)
+    def_count = len(defenders)
+    is_safe = atk_count == 0 or def_count >= atk_count
+
+    # New attacks: enemy pieces attacked by moved piece in new position
+    new_attacks = []
+    for sq in board_after.attacks(moved_sq):
+        target = board_after.piece_at(sq)
+        if target and target.color == enemy_color:
+            new_attacks.append({
+                "piece": piece_at_label(board_after, sq),
+                "value": PIECE_VALUES.get(target.piece_type, 0),
+            })
+
+    # Safe retreat squares for the moved piece
+    safe_squares = 0
+    retreat_squares = []
+    if mover and mover.piece_type != chess.PAWN:
+        # Set it to the mover's turn to check retreats
+        hypo = board_after.copy()
+        hypo.turn = mover_color
+        for rm in hypo.legal_moves:
+            if rm.from_square == moved_sq:
+                rsq = rm.to_square
+                # Is the retreat square attacked by enemy?
+                enemy_attackers = get_legal_attackers(board_after, rsq, enemy_color)
+                if not enemy_attackers:
+                    safe_squares += 1
+                retreat_squares.append(square_name(rsq))
+
+    # Opponent forcing replies: captures, checks, AND pawn advances threatening the piece
+    opp_captures = []
+    opp_checks = []
+    opp_pawn_threats = []
+    for opp_move in board_after.legal_moves:
+        opp_san = board_after.san(opp_move)
+        if board_after.is_capture(opp_move):
+            opp_target = board_after.piece_at(opp_move.to_square)
+            val = PIECE_VALUES.get(opp_target.piece_type, 0) if opp_target else 0
+            opp_captures.append({"san": opp_san, "value": val})
+        board_after.push(opp_move)
+        if board_after.is_check():
+            board_after.pop()
+            if opp_san not in [c["san"] for c in opp_captures]:
+                opp_checks.append(opp_san)
+        else:
+            board_after.pop()
+
+    # Pawn advances that attack the moved piece or its retreat squares
+    if mover and mover.piece_type != chess.PAWN:
+        for opp_move in board_after.legal_moves:
+            opp_piece = board_after.piece_at(opp_move.from_square)
+            if opp_piece and opp_piece.piece_type == chess.PAWN:
+                # Does this pawn advance attack the moved piece's square or a retreat square?
+                opp_board = board_after.copy()
+                opp_board.push(opp_move)
+                targets = set(retreat_squares + [square_name(moved_sq)])
+                pawn_attacks = {square_name(sq) for sq in opp_board.attacks(opp_move.to_square)}
+                threatened = targets & pawn_attacks
+                if threatened:
+                    opp_pawn_threats.append({
+                        "san": board_after.san(opp_move),
+                        "threatens": list(threatened),
+                    })
+
+    # Sort opponent captures by value descending, cap
+    opp_captures.sort(key=lambda x: x["value"], reverse=True)
+    opp_captures = opp_captures[:5]
+    opp_checks = opp_checks[:3]
+    opp_pawn_threats = opp_pawn_threats[:3]
+
+    # Trap warning — only fire when genuinely dangerous, not on every pawn advance
+    trap_warning = False
+    if mover and mover.piece_type != chess.PAWN:
+        if atk_count > 0 and safe_squares == 0:
+            trap_warning = True  # attacked with no escape
+        elif safe_squares <= 1 and any(
+            square_name(moved_sq) in t.get("threatens", []) for t in opp_pawn_threats
+        ):
+            trap_warning = True  # few escapes AND pawn threatens the piece itself
+
+    # Development flag
+    is_development = False
+    if mover:
+        from_rank = chess.square_rank(move.from_square)
+        back_rank = 0 if mover_color == chess.WHITE else 7
+        if from_rank == back_rank and mover.piece_type in [chess.KNIGHT, chess.BISHOP, chess.ROOK, chess.QUEEN]:
+            is_development = True
+
+    # Pawn structure note
+    pawn_note = None
+    if mover and mover.piece_type == chess.PAWN:
+        ps_before = pawn_structure(board, mover_color)
+        ps_after = pawn_structure(board_after, mover_color)
+        new_isolated = set(ps_after["isolated"]) - set(ps_before["isolated"])
+        new_doubled = set(ps_after["doubled"]) - set(ps_before["doubled"])
+        new_passed = set(ps_after["passed"]) - set(ps_before["passed"])
+        notes = []
+        if new_isolated:
+            notes.append(f"creates isolated {','.join(new_isolated)}")
+        if new_doubled:
+            notes.append(f"creates doubled {','.join(new_doubled)}")
+        if new_passed:
+            notes.append(f"creates passed {','.join(new_passed)}")
+        pawn_note = "; ".join(notes) if notes else None
+
+    return {
+        "san": san,
+        "uci": uci,
+        "is_capture": is_capture,
+        "captured_piece": captured_piece,
+        "captured_value": captured_value,
+        "is_check": is_check,
+        "is_checkmate": is_checkmate,
+        "mat_delta": mat_delta,
+        "piece_safety": {"attackers": atk_count, "defenders": def_count, "safe": is_safe},
+        "new_attacks": new_attacks[:5],
+        "safe_squares": safe_squares,
+        "opp_captures": [c["san"] for c in opp_captures],
+        "opp_checks": opp_checks,
+        "opp_pawn_threats": opp_pawn_threats,
+        "trap_warning": trap_warning,
+        "is_development": is_development,
+        "pawn_note": pawn_note,
+    }
+
+
+def _priority_score(c: dict, board: chess.Board) -> int:
+    """Score a candidate for pre-filtering. Higher = more interesting."""
+    score = 0
+    if c["is_checkmate"]:
+        return 1000
+    if c["is_check"]:
+        score += 100
+    if c["is_capture"]:
+        mover = board.piece_at(chess.parse_square(c["uci"][:2]))
+        mover_val = PIECE_VALUES.get(mover.piece_type, 0) if mover else 0
+        if c["captured_value"] >= mover_val:
+            score += 50 + c["captured_value"]
+        elif not c["piece_safety"]["safe"]:
+            score += 30
+        else:
+            score += 20 + c["captured_value"]
+    if c["new_attacks"]:
+        best_target = max(a["value"] for a in c["new_attacks"])
+        score += 10 + best_target
+    if c["is_development"]:
+        score += 5
+    if c["uci"] in ("e1g1", "e1c1", "e8g8", "e8c8"):  # castling
+        score += 10
+    # Pawn to 7th rank bonus — only for pawns
+    mover_piece = board.piece_at(chess.parse_square(c["uci"][:2]))
+    if mover_piece and mover_piece.piece_type == chess.PAWN:
+        to_rank = int(c["uci"][3])
+        if board.turn == chess.WHITE and to_rank == 7:
+            score += 25
+        elif board.turn == chess.BLACK and to_rank == 2:
+            score += 25
+    return score
+
+
+def cmd_candidates(board: chess.Board, max_candidates: int = 10, as_json: bool = False) -> str | dict:
+    """Pre-compute consequences for all legal moves. Returns ranked candidates."""
+    phase = detect_game_phase(board)
+    w_mat = material_count(board, chess.WHITE)
+    b_mat = material_count(board, chess.BLACK)
+    turn = "white" if board.turn == chess.WHITE else "black"
+
+    # Compute position context: hanging pieces, pieces under attack, threats
+    my_color = board.turn
+    enemy_color = not my_color
+    hanging = []
+    under_attack = []
+    enemy_hanging = []
+
+    for pt in [chess.QUEEN, chess.ROOK, chess.BISHOP, chess.KNIGHT, chess.PAWN]:
+        for sq in board.pieces(pt, my_color):
+            attackers = get_legal_attackers(board, sq, enemy_color)
+            defenders = get_defenders(board, sq, my_color)
+            if attackers:
+                sq_name = square_name(sq)
+                atk_labels = [piece_at_label(board, a) for a in attackers]
+                def_labels = [piece_at_label(board, d) for d in defenders]
+                val = PIECE_VALUES[pt]
+                if not defenders:
+                    hanging.append({"piece": piece_at_label(board, sq), "square": sq_name,
+                                    "value": val, "attackers": atk_labels})
+                else:
+                    under_attack.append({"piece": piece_at_label(board, sq), "square": sq_name,
+                                         "value": val, "attackers": atk_labels, "defenders": def_labels})
+
+        for sq in board.pieces(pt, enemy_color):
+            attackers = get_legal_attackers(board, sq, my_color)
+            defenders = get_defenders(board, sq, enemy_color)
+            if attackers and not defenders:
+                enemy_hanging.append({"piece": piece_at_label(board, sq), "square": square_name(sq),
+                                      "value": PIECE_VALUES[pt]})
+
+    position_summary = {
+        "fen": board.fen(),
+        "turn": turn,
+        "phase": phase,
+        "material_white": w_mat,
+        "material_black": b_mat,
+        "material_diff": w_mat - b_mat,
+        "in_check": board.is_check(),
+        "my_hanging": hanging,
+        "my_under_attack": under_attack,
+        "enemy_hanging": enemy_hanging,
+    }
+
+    # Compute all candidates
+    all_candidates = []
+    for move in board.legal_moves:
+        c = _compute_one_candidate(board, move)
+        c["priority"] = _priority_score(c, board)
+        all_candidates.append(c)
+
+    # Sort by priority
+    all_candidates.sort(key=lambda x: x["priority"], reverse=True)
+
+    # If in check, include all (usually 1-5)
+    if board.is_check():
+        top = all_candidates
+    else:
+        top = all_candidates[:max_candidates]
+        # Ensure at least 3
+        if len(top) < 3 and len(all_candidates) > len(top):
+            top = all_candidates[:3]
+
+    data = {
+        "position_summary": position_summary,
+        "all_ranked": all_candidates,
+        "top": top,
+    }
+
+    if as_json:
+        return data
+
+    # Natural language table
+    lines = []
+    ps = position_summary
+    mat_desc = f"W{ps['material_white']} B{ps['material_black']}"
+    if ps["material_diff"] > 0:
+        mat_desc += f" (White +{ps['material_diff']})"
+    elif ps["material_diff"] < 0:
+        mat_desc += f" (Black +{-ps['material_diff']})"
+    else:
+        mat_desc += " (equal)"
+    lines.append(f"POSITION: {ps['turn'].capitalize()} to move | {ps['phase'].capitalize()} | Material: {mat_desc}")
+
+    # Urgent threats
+    if ps["my_hanging"]:
+        lines.append("")
+        lines.append("!! YOUR HANGING PIECES (undefended + attacked — SAVE THEM):")
+        for h in ps["my_hanging"]:
+            lines.append(f"  {h['piece']} on {h['square']} (value {h['value']}) attacked by {', '.join(h['attackers'])}")
+    if ps["my_under_attack"]:
+        pieces_at_risk = [a for a in ps["my_under_attack"] if a["value"] >= 3]
+        if pieces_at_risk:
+            lines.append("")
+            lines.append("PIECES UNDER ATTACK (defended but targeted):")
+            for a in pieces_at_risk:
+                lines.append(f"  {a['piece']} on {a['square']} attacked by {', '.join(a['attackers'])}, defended by {', '.join(a['defenders'])}")
+    if ps["enemy_hanging"]:
+        lines.append("")
+        lines.append("OPPONENT HANGING PIECES (free to capture):")
+        for h in ps["enemy_hanging"]:
+            lines.append(f"  {h['piece']} on {h['square']} (value {h['value']})")
+    if ps["in_check"]:
+        lines.append("*** IN CHECK ***")
+    lines.append("")
+    lines.append(f"CANDIDATES ({len(top)}):")
+    lines.append(f"{'#':<3} {'Move':<8} {'Type':<14} {'MatD':<6} {'Safety':<16} {'Attacks':<22} {'OppForcing'}")
+    lines.append("-" * 100)
+
+    for i, c in enumerate(top):
+        # Type
+        if c["is_checkmate"]:
+            ctype = "CHECKMATE"
+        elif c["is_check"]:
+            ctype = "check"
+        elif c["is_capture"]:
+            ctype = f"capt({c['captured_piece'][:1]},{c['captured_value']})"
+        elif c["is_development"]:
+            ctype = "develop"
+        elif c["uci"] in ("e1g1", "e1c1", "e8g8", "e8c8"):
+            ctype = "castle"
+        else:
+            ctype = ""
+
+        # MatDelta
+        md = f"+{c['mat_delta']}" if c["mat_delta"] > 0 else str(c["mat_delta"])
+
+        # Safety
+        ps_info = c["piece_safety"]
+        if ps_info["safe"]:
+            safety = f"safe({ps_info['attackers']}atk,{ps_info['defenders']}def)"
+        else:
+            safety = f"RISK({ps_info['attackers']}atk,{ps_info['defenders']}def)"
+
+        # Attacks
+        attacks = ",".join(f"{a['piece']}({a['value']})" for a in c["new_attacks"][:3]) or "-"
+
+        # OppForcing
+        opp_parts = []
+        if c["opp_captures"]:
+            opp_parts.append(f"capt:{','.join(c['opp_captures'][:3])}")
+        if c["opp_checks"]:
+            opp_parts.append(f"chk:{','.join(c['opp_checks'][:2])}")
+        if c["opp_pawn_threats"]:
+            threats = ",".join(t["san"] for t in c["opp_pawn_threats"][:2])
+            opp_parts.append(f"trap:{threats}")
+        opp = " ".join(opp_parts) or "-"
+
+        # Trap warning
+        warn = " !!TRAP" if c["trap_warning"] else ""
+        # Pawn note
+        pnote = f" [{c['pawn_note']}]" if c.get("pawn_note") else ""
+
+        lines.append(f"{i+1:<3} {c['san']:<8} {ctype:<14} {md:<6} {safety:<16} {attacks:<22} {opp}{warn}{pnote}")
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="AgentChess Perception Layer — ground-truth board facts via python-chess"
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # state
+    p_state = subparsers.add_parser("state", help="Full board state description")
+    p_state.add_argument("--fen", required=True, help="FEN string (quote it)")
+    p_state.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # legal
+    p_legal = subparsers.add_parser("legal", help="List all legal moves")
+    p_legal.add_argument("--fen", required=True, help="FEN string")
+    p_legal.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # simulate
+    p_sim = subparsers.add_parser("simulate", help="Simulate a sequence of moves")
+    p_sim.add_argument("--fen", required=True, help="FEN string")
+    p_sim.add_argument("--move", action="append", required=True, dest="moves",
+                        help="Move in SAN or UCI (repeat for multiple)")
+    p_sim.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # query
+    p_query = subparsers.add_parser("query", help="Query info about a square")
+    p_query.add_argument("--fen", required=True, help="FEN string")
+    p_query.add_argument("--square", required=True, help="Square to query (e.g. e4)")
+    p_query.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # validate
+    p_validate = subparsers.add_parser("validate", help="Validate a candidate move")
+    p_validate.add_argument("--fen", required=True, help="FEN string")
+    p_validate.add_argument("--move", required=True, help="Move in SAN or UCI")
+    p_validate.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # candidates
+    p_cand = subparsers.add_parser("candidates", help="Pre-compute candidate move consequences")
+    p_cand.add_argument("--fen", required=True, help="FEN string")
+    p_cand.add_argument("--max", type=int, default=10, dest="max_candidates", help="Max candidates (default 10)")
+    p_cand.add_argument("--json", action="store_true", help="Output as JSON")
+
+    args = parser.parse_args()
+
+    try:
+        board = chess.Board(args.fen)
+    except ValueError as e:
+        print(f"Invalid FEN: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    as_json = getattr(args, "json", False)
+
+    if args.command == "state":
+        result = cmd_state(board, as_json)
+    elif args.command == "legal":
+        result = cmd_legal(board, as_json)
+    elif args.command == "simulate":
+        result = cmd_simulate(board, args.moves, as_json)
+    elif args.command == "query":
+        result = cmd_query(board, args.square, as_json)
+    elif args.command == "validate":
+        result = cmd_validate(board, args.move, as_json)
+    elif args.command == "candidates":
+        result = cmd_candidates(board, args.max_candidates, as_json)
+    else:
+        parser.print_help()
+        sys.exit(1)
+
+    if isinstance(result, dict):
+        print(json.dumps(result, indent=2))
+    else:
+        print(result)
+
+
+if __name__ == "__main__":
+    main()

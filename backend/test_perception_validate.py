@@ -1,0 +1,59 @@
+import unittest
+
+import chess
+
+from perception import cmd_validate
+
+
+class ValidateMoveTests(unittest.TestCase):
+    def test_illegal_move_is_rejected(self):
+        board = chess.Board()
+        result = cmd_validate(board, "e7e5", as_json=True)
+        self.assertFalse(result["legal"])
+        self.assertFalse(result["passed"])
+        self.assertIn("Illegal", result["hard_failures"][0])
+
+    def test_en_passant_is_parsed_and_normalized(self):
+        board = chess.Board("rnbqkbnr/ppp1pppp/8/3pP3/8/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 3")
+        result = cmd_validate(board, "exd6", as_json=True)
+        self.assertTrue(result["legal"])
+        self.assertEqual(result["san"], "exd6")
+        self.assertEqual(result["uci"], "e5d6")
+
+    def test_promotion_is_parsed_and_normalized(self):
+        board = chess.Board("7k/P7/8/8/8/8/8/K7 w - - 0 1")
+        result = cmd_validate(board, "a8=Q+", as_json=True)
+        self.assertTrue(result["legal"])
+        self.assertTrue(result["passed"])
+        self.assertEqual(result["uci"], "a7a8q")
+        self.assertEqual(result["san"], "a8=Q+")
+
+    def test_castling_is_supported(self):
+        board = chess.Board("r3k2r/8/8/8/8/8/8/R3K2R b KQkq - 0 1")
+        result = cmd_validate(board, "O-O", as_json=True)
+        self.assertTrue(result["legal"])
+        self.assertTrue(result["passed"])
+        self.assertEqual(result["uci"], "e8g8")
+
+    def test_quiet_trap_reply_is_detected(self):
+        board = chess.Board("4k3/8/2n5/3B4/8/3P4/PP6/6K1 b - - 0 1")
+        result = cmd_validate(board, "c6a5", as_json=True)
+        self.assertFalse(result["passed"])
+        self.assertIn("b4 traps the moved piece on a5", result["hard_failures"][0])
+        self.assertEqual(result["quiet_hostile_replies"][0]["san"], "b4")
+
+    def test_immediate_mate_reply_is_detected(self):
+        board = chess.Board("r1bqkbnr/pppp1ppp/2n5/4p2Q/2B5/8/PPPP1PPP/RNB1K1NR b KQkq - 2 3")
+        result = cmd_validate(board, "a6", as_json=True)
+        self.assertFalse(result["passed"])
+        self.assertIn("Qxf7# is immediate checkmate for White.", result["hard_failures"])
+
+    def test_free_piece_loss_is_detected(self):
+        board = chess.Board("4k3/8/2n5/8/8/P7/8/6K1 b - - 0 1")
+        result = cmd_validate(board, "c6b4", as_json=True)
+        self.assertFalse(result["passed"])
+        self.assertIn("axb4 wins black knight with no immediate equalizing recapture.", result["hard_failures"])
+
+
+if __name__ == "__main__":
+    unittest.main()

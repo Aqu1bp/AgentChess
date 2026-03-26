@@ -1,0 +1,413 @@
+/* Chessboard styles - Premium refined aesthetic */
+
+.cg-wrap {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
+  border-radius: 4px;
+}
+
+.cg-board {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  user-select: none;
+  line-height: 0;
+  cursor: pointer;
+
+  /* Refined warm wood board */
+  background-color: #ddc8a8;
+  background-image: url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA4IDgiIHNoYXBlLXJlbmRlcmluZz0iY3Jpc3BFZGdlcyI+CjxnIGlkPSJhIj4KICA8ZyBpZD0iYiI+CiAgICA8ZyBpZD0iYyI+CiAgICAgIDxnIGlkPSJkIj4KICAgICAgICA8cmVjdCB3aWR0aD0iMSIgaGVpZ2h0PSIxIiBmaWxsPSIjZWRkZmM4Ii8+CiAgICAgICAgPHJlY3QgeD0iMSIgeT0iMSIgd2lkdGg9IjEiIGhlaWdodD0iMSIgZmlsbD0iI2VkZGZjOCIvPgogICAgICAgIDxyZWN0IHk9IjEiIHdpZHRoPSIxIiBoZWlnaHQ9IjEiIGZpbGw9IiNiODg4NjMiLz4KICAgICAgICA8cmVjdCB4PSIxIiB3aWR0aD0iMSIgaGVpZ2h0PSIxIiBmaWxsPSIjYjg4ODYzIi8+CiAgICAgIDwvZz4KICAgICAgPHVzZSB4PSIyIiBocmVmPSIjZCIvPgogICAgPC9nPgogICAgPHVzZSB4PSI0IiBocmVmPSIjYyIvPgogIDwvZz4KICA8dXNlIHk9IjIiIGhyZWY9IiNiIi8+CjwvZz4KPHVzZSB5PSI0IiBocmVmPSIjYSIvPgo8L3N2Zz4=');
+  background-size: cover;
+}
+
+/* Pieces */
+piece {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 12.5%;
+  height: 12.5%;
+  background-size: cover;
+  z-index: 2;
+  pointer-events: none;
+}
+
+piece.dragging,
+piece.animating {
+  will-change: transform;
+}
+
+piece.dragging {
+  cursor: grabbing;
+  z-index: 11 !important;
+  filter: drop-shadow(0 8px 16px rgba(0, 0, 0, 0.35));
+  transform-origin: center center;
+}
+
+/* White pieces - Elegant style */
+piece.white.pawn {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 45 45'%3E%3Cpath d='m 22.5,9 c -2.21,0 -4,1.79 -4,4 0,0.89 0.29,1.71 0.78,2.38 C 17.33,16.5 16,18.59 16,21 c 0,2.03 0.94,3.84 2.41,5.03 C 15.41,27.09 11,31.58 11,39.5 H 34 C 34,31.58 29.59,27.09 26.59,26.03 28.06,24.84 29,23.03 29,21 29,18.59 27.67,16.5 25.72,15.38 26.21,14.71 26.5,13.89 26.5,13 c 0,-2.21 -1.79,-4 -4,-4 z' style='opacity:1; fill:%23ffffff; fill-opacity:1; fill-rule:nonzero; stroke:%23000000; stroke-width:1.5; stroke-linecap:round; stroke-linejoin:miter; stroke-miterlimit:4; stroke-dasharray:none; stroke-opacity:1;'/%3E%3C/svg%3E");
+}
+
+piece.white.knight {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 45 45'%3E%3Cg style='opacity:1; fill:none; fill-opacity:1; fill-rule:evenodd; stroke:%23000000; stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round; stroke-miterlimit:4; stroke-dasharray:none; stroke-opacity:1;'%3E%3Cpath d='M 22,10 C 32.5,11 38.5,18 38,39 L 15,39 C 15,30 25,32.5 23,18' style='fill:%23ffffff; stroke:%23000000;'/%3E%3Cpath d='M 24,18 C 24.38,20.91 18.45,25.37 16,27 C 13,29 13.18,31.34 11,31 C 9.958,30.06 12.41,27.96 11,28 C 10,28 11.19,29.23 10,30 C 9,30 5.997,31 6,26 C 6,24 12,14 12,14 C 12,14 13.89,12.1 14,10.5 C 13.27,9.506 13.5,8.5 13.5,7.5 C 14.5,6.5 16.5,10 16.5,10 L 18.5,10 C 18.5,10 19.28,8.008 21,7 C 22,7 22,10 22,10' style='fill:%23ffffff; stroke:%23000000;'/%3E%3Cpath d='M 9.5 25.5 A 0.5 0.5 0 1 1 8.5,25.5 A 0.5 0.5 0 1 1 9.5 25.5 z' style='fill:%23000000; stroke:%23000000;'/%3E%3Cpath d='M 15 15.5 A 0.5 1.5 0 1 1 14,15.5 A 0.5 1.5 0 1 1 15 15.5 z' transform='matrix(0.866,0.5,-0.5,0.866,9.693,-5.173)' style='fill:%23000000; stroke:%23000000;'/%3E%3C/g%3E%3C/svg%3E");
+}
+
+piece.white.bishop {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 45 45'%3E%3Cg style='opacity:1; fill:none; fill-rule:evenodd; fill-opacity:1; stroke:%23000000; stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round; stroke-miterlimit:4; stroke-dasharray:none; stroke-opacity:1;'%3E%3Cg style='fill:%23ffffff; stroke:%23000000; stroke-linecap:butt;'%3E%3Cpath d='M 9,36 C 12.39,35.03 19.11,36.43 22.5,34 C 25.89,36.43 32.61,35.03 36,36 C 36,36 37.65,36.54 39,38 C 38.32,38.97 37.35,38.99 36,38.5 C 32.61,37.53 25.89,38.96 22.5,37.5 C 19.11,38.96 12.39,37.53 9,38.5 C 7.646,38.99 6.677,38.97 6,38 C 7.354,36.06 9,36 9,36 z'/%3E%3Cpath d='M 15,32 C 17.5,34.5 27.5,34.5 30,32 C 30.5,30.5 30,30 30,30 C 30,27.5 27.5,26 27.5,26 C 33,24.5 33.5,14.5 22.5,10.5 C 11.5,14.5 12,24.5 17.5,26 C 17.5,26 15,27.5 15,30 C 15,30 14.5,30.5 15,32 z'/%3E%3Cpath d='M 25 8 A 2.5 2.5 0 1 1 20,8 A 2.5 2.5 0 1 1 25 8 z'/%3E%3C/g%3E%3Cpath d='M 17.5,26 L 27.5,26 M 15,30 L 30,30 M 22.5,15.5 L 22.5,20.5 M 20,18 L 25,18' style='fill:none; stroke:%23000000; stroke-linejoin:miter;'/%3E%3C/g%3E%3C/svg%3E");
+}
+
+piece.white.rook {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 45 45'%3E%3Cg style='opacity:1; fill:%23ffffff; fill-opacity:1; fill-rule:evenodd; stroke:%23000000; stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round; stroke-miterlimit:4; stroke-dasharray:none; stroke-opacity:1;'%3E%3Cpath d='M 9,39 L 36,39 L 36,36 L 9,36 L 9,39 z ' style='stroke-linecap:butt;'/%3E%3Cpath d='M 12,36 L 12,32 L 33,32 L 33,36 L 12,36 z ' style='stroke-linecap:butt;'/%3E%3Cpath d='M 11,14 L 11,9 L 15,9 L 15,11 L 20,11 L 20,9 L 25,9 L 25,11 L 30,11 L 30,9 L 34,9 L 34,14' style='stroke-linecap:butt;'/%3E%3Cpath d='M 34,14 L 31,17 L 14,17 L 11,14'/%3E%3Cpath d='M 31,17 L 31,29.5 L 14,29.5 L 14,17' style='stroke-linecap:butt; stroke-linejoin:miter;'/%3E%3Cpath d='M 31,29.5 L 32.5,32 L 12.5,32 L 14,29.5'/%3E%3Cpath d='M 11,14 L 34,14' style='fill:none; stroke:%23000000; stroke-linejoin:miter;'/%3E%3C/g%3E%3C/svg%3E");
+}
+
+piece.white.queen {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 45 45'%3E%3Cg style='opacity:1; fill:%23ffffff; fill-opacity:1; fill-rule:evenodd; stroke:%23000000; stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round; stroke-miterlimit:4; stroke-dasharray:none; stroke-opacity:1;'%3E%3Cpath d='M 9 13 A 2 2 0 1 1 5,13 A 2 2 0 1 1 9 13 z' transform='translate(-1,-1)'/%3E%3Cpath d='M 9 13 A 2 2 0 1 1 5,13 A 2 2 0 1 1 9 13 z' transform='translate(15.5,-5.5)'/%3E%3Cpath d='M 9 13 A 2 2 0 1 1 5,13 A 2 2 0 1 1 9 13 z' transform='translate(32,-1)'/%3E%3Cpath d='M 9 13 A 2 2 0 1 1 5,13 A 2 2 0 1 1 9 13 z' transform='translate(7,-4.5)'/%3E%3Cpath d='M 9 13 A 2 2 0 1 1 5,13 A 2 2 0 1 1 9 13 z' transform='translate(24,-4)'/%3E%3Cpath d='M 9,26 C 17.5,24.5 30,24.5 36,26 L 38,14 L 31,25 L 31,11 L 25.5,24.5 L 22.5,9.5 L 19.5,24.5 L 14,10.5 L 14,25 L 7,14 L 9,26 z ' style='stroke-linecap:butt;'/%3E%3Cpath d='M 9,26 C 9,28 10.5,28 11.5,30 C 12.5,31.5 12.5,31 12,33.5 C 10.5,34.5 10.5,36 10.5,36 C 9,37.5 11,38.5 11,38.5 C 17.5,39.5 27.5,39.5 34,38.5 C 34,38.5 35.5,37.5 34,36 C 34,36 34.5,34.5 33,33.5 C 32.5,31 32.5,31.5 33.5,30 C 34.5,28 36,28 36,26 C 27.5,24.5 17.5,24.5 9,26 z ' style='stroke-linecap:butt;'/%3E%3Cpath d='M 11.5,30 C 15,29 30,29 33.5,30' style='fill:none;'/%3E%3Cpath d='M 12,33.5 C 18,32.5 27,32.5 33,33.5' style='fill:none;'/%3E%3C/g%3E%3C/svg%3E");
+}
+
+piece.white.king {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 45 45'%3E%3Cg style='fill:none; fill-opacity:1; fill-rule:evenodd; stroke:%23000000; stroke-width:1.5; stroke-linecap:round;stroke-linejoin:round;stroke-miterlimit:4; stroke-dasharray:none; stroke-opacity:1;'%3E%3Cpath d='M 22.5,11.63 L 22.5,6' style='fill:none; stroke:%23000000; stroke-linejoin:miter;'/%3E%3Cpath d='M 20,8 L 25,8' style='fill:none; stroke:%23000000; stroke-linejoin:miter;'/%3E%3Cpath d='M 22.5,25 C 22.5,25 27,17.5 25.5,14.5 C 25.5,14.5 24.5,12 22.5,12 C 20.5,12 19.5,14.5 19.5,14.5 C 18,17.5 22.5,25 22.5,25' style='fill:%23ffffff; stroke:%23000000; stroke-linecap:butt; stroke-linejoin:miter;'/%3E%3Cpath d='M 11.5,37 C 17,40.5 27,40.5 32.5,37 L 32.5,30 C 32.5,30 41.5,25.5 38.5,19.5 C 34.5,13 25,16 22.5,23.5 L 22.5,27 L 22.5,23.5 C 19,16 9.5,13 6.5,19.5 C 3.5,25.5 11.5,29.5 11.5,29.5 L 11.5,37 z ' style='fill:%23ffffff; stroke:%23000000;'/%3E%3Cpath d='M 11.5,30 C 17,27 27,27 32.5,30' style='fill:none; stroke:%23000000;'/%3E%3Cpath d='M 11.5,33.5 C 17,30.5 27,30.5 32.5,33.5' style='fill:none; stroke:%23000000;'/%3E%3Cpath d='M 11.5,37 C 17,34 27,34 32.5,37' style='fill:none; stroke:%23000000;'/%3E%3C/g%3E%3C/svg%3E");
+}
+
+/* Black pieces */
+piece.black.pawn {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 45 45'%3E%3Cpath d='m 22.5,9 c -2.21,0 -4,1.79 -4,4 0,0.89 0.29,1.71 0.78,2.38 C 17.33,16.5 16,18.59 16,21 c 0,2.03 0.94,3.84 2.41,5.03 C 15.41,27.09 11,31.58 11,39.5 H 34 C 34,31.58 29.59,27.09 26.59,26.03 28.06,24.84 29,23.03 29,21 29,18.59 27.67,16.5 25.72,15.38 26.21,14.71 26.5,13.89 26.5,13 c 0,-2.21 -1.79,-4 -4,-4 z' style='opacity:1; fill:%23000000; fill-opacity:1; fill-rule:nonzero; stroke:%23000000; stroke-width:1.5; stroke-linecap:round; stroke-linejoin:miter; stroke-miterlimit:4; stroke-dasharray:none; stroke-opacity:1;'/%3E%3C/svg%3E");
+}
+
+piece.black.knight {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 45 45'%3E%3Cg style='opacity:1; fill:none; fill-opacity:1; fill-rule:evenodd; stroke:%23000000; stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round; stroke-miterlimit:4; stroke-dasharray:none; stroke-opacity:1;'%3E%3Cpath d='M 22,10 C 32.5,11 38.5,18 38,39 L 15,39 C 15,30 25,32.5 23,18' style='fill:%23000000; stroke:%23000000;'/%3E%3Cpath d='M 24,18 C 24.38,20.91 18.45,25.37 16,27 C 13,29 13.18,31.34 11,31 C 9.958,30.06 12.41,27.96 11,28 C 10,28 11.19,29.23 10,30 C 9,30 5.997,31 6,26 C 6,24 12,14 12,14 C 12,14 13.89,12.1 14,10.5 C 13.27,9.506 13.5,8.5 13.5,7.5 C 14.5,6.5 16.5,10 16.5,10 L 18.5,10 C 18.5,10 19.28,8.008 21,7 C 22,7 22,10 22,10' style='fill:%23000000; stroke:%23000000;'/%3E%3Cpath d='M 9.5 25.5 A 0.5 0.5 0 1 1 8.5,25.5 A 0.5 0.5 0 1 1 9.5 25.5 z' style='fill:%23ffffff; stroke:%23ffffff;'/%3E%3Cpath d='M 15 15.5 A 0.5 1.5 0 1 1 14,15.5 A 0.5 1.5 0 1 1 15 15.5 z' transform='matrix(0.866,0.5,-0.5,0.866,9.693,-5.173)' style='fill:%23ffffff; stroke:%23ffffff;'/%3E%3Cpath d='M 24.55,10.4 L 24.1,11.85 L 24.6,12 C 27.75,13 30.25,14.49 32.5,18.75 C 34.75,23.01 35.75,29.06 35.25,39 L 35.2,39.5 L 37.45,39.5 L 37.5,39 C 38,28.94 36.62,22.15 34.25,17.66 C 31.88,13.17 28.46,11.02 25.06,10.5 L 24.55,10.4 z ' style='fill:%23ffffff; stroke:none;'/%3E%3C/g%3E%3C/svg%3E");
+}
+
+piece.black.bishop {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 45 45'%3E%3Cg style='opacity:1; fill:none; fill-rule:evenodd; fill-opacity:1; stroke:%23000000; stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round; stroke-miterlimit:4; stroke-dasharray:none; stroke-opacity:1;'%3E%3Cg style='fill:%23000000; stroke:%23000000; stroke-linecap:butt;'%3E%3Cpath d='M 9,36 C 12.39,35.03 19.11,36.43 22.5,34 C 25.89,36.43 32.61,35.03 36,36 C 36,36 37.65,36.54 39,38 C 38.32,38.97 37.35,38.99 36,38.5 C 32.61,37.53 25.89,38.96 22.5,37.5 C 19.11,38.96 12.39,37.53 9,38.5 C 7.646,38.99 6.677,38.97 6,38 C 7.354,36.06 9,36 9,36 z'/%3E%3Cpath d='M 15,32 C 17.5,34.5 27.5,34.5 30,32 C 30.5,30.5 30,30 30,30 C 30,27.5 27.5,26 27.5,26 C 33,24.5 33.5,14.5 22.5,10.5 C 11.5,14.5 12,24.5 17.5,26 C 17.5,26 15,27.5 15,30 C 15,30 14.5,30.5 15,32 z'/%3E%3Cpath d='M 25 8 A 2.5 2.5 0 1 1 20,8 A 2.5 2.5 0 1 1 25 8 z'/%3E%3C/g%3E%3Cpath d='M 17.5,26 L 27.5,26 M 15,30 L 30,30 M 22.5,15.5 L 22.5,20.5 M 20,18 L 25,18' style='fill:none; stroke:%23ffffff; stroke-linejoin:miter;'/%3E%3C/g%3E%3C/svg%3E");
+}
+
+piece.black.rook {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 45 45'%3E%3Cg style='opacity:1; fill:%23000000; fill-opacity:1; fill-rule:evenodd; stroke:%23000000; stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round; stroke-miterlimit:4; stroke-dasharray:none; stroke-opacity:1;'%3E%3Cpath d='M 9,39 L 36,39 L 36,36 L 9,36 L 9,39 z ' style='stroke-linecap:butt;'/%3E%3Cpath d='M 12.5,32 L 14,29.5 L 31,29.5 L 32.5,32 L 12.5,32 z ' style='stroke-linecap:butt;'/%3E%3Cpath d='M 12,36 L 12,32 L 33,32 L 33,36 L 12,36 z ' style='stroke-linecap:butt;'/%3E%3Cpath d='M 14,29.5 L 14,16.5 L 31,16.5 L 31,29.5 L 14,29.5 z ' style='stroke-linecap:butt; stroke-linejoin:miter;'/%3E%3Cpath d='M 14,16.5 L 11,14 L 34,14 L 31,16.5 L 14,16.5 z ' style='stroke-linecap:butt;'/%3E%3Cpath d='M 11,14 L 11,9 L 15,9 L 15,11 L 20,11 L 20,9 L 25,9 L 25,11 L 30,11 L 30,9 L 34,9 L 34,14 L 11,14 z ' style='stroke-linecap:butt;'/%3E%3Cpath d='M 12,35.5 L 33,35.5 L 33,35.5' style='fill:none; stroke:%23ffffff; stroke-width:1; stroke-linejoin:miter;'/%3E%3Cpath d='M 13,31.5 L 32,31.5' style='fill:none; stroke:%23ffffff; stroke-width:1; stroke-linejoin:miter;'/%3E%3Cpath d='M 14,29.5 L 31,29.5' style='fill:none; stroke:%23ffffff; stroke-width:1; stroke-linejoin:miter;'/%3E%3Cpath d='M 14,16.5 L 31,16.5' style='fill:none; stroke:%23ffffff; stroke-width:1; stroke-linejoin:miter;'/%3E%3Cpath d='M 11,14 L 34,14' style='fill:none; stroke:%23ffffff; stroke-width:1; stroke-linejoin:miter;'/%3E%3C/g%3E%3C/svg%3E");
+}
+
+piece.black.queen {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 45 45'%3E%3Cg style='opacity:1; fill:%23000000; fill-opacity:1; fill-rule:evenodd; stroke:%23000000; stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round; stroke-miterlimit:4; stroke-dasharray:none; stroke-opacity:1;'%3E%3Cg style='fill:%23000000; stroke:none;'%3E%3Ccircle cx='6' cy='12' r='2.75'/%3E%3Ccircle cx='14' cy='9' r='2.75'/%3E%3Ccircle cx='22.5' cy='8' r='2.75'/%3E%3Ccircle cx='31' cy='9' r='2.75'/%3E%3Ccircle cx='39' cy='12' r='2.75'/%3E%3C/g%3E%3Cpath d='M 9,26 C 17.5,24.5 30,24.5 36,26 L 38.5,13.5 L 31,25 L 30.7,10.9 L 25.5,24.5 L 22.5,10 L 19.5,24.5 L 14.3,10.9 L 14,25 L 6.5,13.5 L 9,26 z' style='stroke-linecap:butt; stroke:%23000000;'/%3E%3Cpath d='M 9,26 C 9,28 10.5,28 11.5,30 C 12.5,31.5 12.5,31 12,33.5 C 10.5,34.5 10.5,36 10.5,36 C 9,37.5 11,38.5 11,38.5 C 17.5,39.5 27.5,39.5 34,38.5 C 34,38.5 35.5,37.5 34,36 C 34,36 34.5,34.5 33,33.5 C 32.5,31 32.5,31.5 33.5,30 C 34.5,28 36,28 36,26 C 27.5,24.5 17.5,24.5 9,26 z' style='stroke-linecap:butt;'/%3E%3Cpath d='M 11,38.5 A 35,35 1 0 0 34,38.5' style='fill:none; stroke:%23000000; stroke-linecap:butt;'/%3E%3Cpath d='M 11,29 A 35,35 1 0 1 34,29' style='fill:none; stroke:%23ffffff;'/%3E%3Cpath d='M 12.5,31.5 L 32.5,31.5' style='fill:none; stroke:%23ffffff;'/%3E%3Cpath d='M 11.5,34.5 A 35,35 1 0 0 33.5,34.5' style='fill:none; stroke:%23ffffff;'/%3E%3Cpath d='M 10.5,37.5 A 35,35 1 0 0 34.5,37.5' style='fill:none; stroke:%23ffffff;'/%3E%3C/g%3E%3C/svg%3E");
+}
+
+piece.black.king {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 45 45'%3E%3Cg style='fill:none; fill-opacity:1; fill-rule:evenodd; stroke:%23000000; stroke-width:1.5; stroke-linecap:round;stroke-linejoin:round;stroke-miterlimit:4; stroke-dasharray:none; stroke-opacity:1;'%3E%3Cpath d='M 22.5,11.63 L 22.5,6' style='fill:none; stroke:%23000000; stroke-linejoin:miter;' id='path6570'/%3E%3Cpath d='M 22.5,25 C 22.5,25 27,17.5 25.5,14.5 C 25.5,14.5 24.5,12 22.5,12 C 20.5,12 19.5,14.5 19.5,14.5 C 18,17.5 22.5,25 22.5,25' style='fill:%23000000;fill-opacity:1; stroke-linecap:butt; stroke-linejoin:miter;'/%3E%3Cpath d='M 11.5,37 C 17,40.5 27,40.5 32.5,37 L 32.5,30 C 32.5,30 41.5,25.5 38.5,19.5 C 34.5,13 25,16 22.5,23.5 L 22.5,27 L 22.5,23.5 C 19,16 9.5,13 6.5,19.5 C 3.5,25.5 11.5,29.5 11.5,29.5 L 11.5,37 z ' style='fill:%23000000; stroke:%23000000;'/%3E%3Cpath d='M 20,8 L 25,8' style='fill:none; stroke:%23000000; stroke-linejoin:miter;'/%3E%3Cpath d='M 32,29.5 C 32,29.5 40.5,25.5 38.03,19.85 C 34.15,14 25,18 22.5,24.5 L 22.51,26.6 L 22.5,24.5 C 20,18 9.906,14 6.997,19.85 C 4.5,25.5 11.85,28.85 11.85,28.85' style='fill:none; stroke:%23ffffff;'/%3E%3Cpath d='M 11.5,30 C 17,27 27,27 32.5,30 M 11.5,33.5 C 17,30.5 27,30.5 32.5,33.5 M 11.5,37 C 17,34 27,34 32.5,37' style='fill:none; stroke:%23ffffff;'/%3E%3C/g%3E%3C/svg%3E");
+}
+
+/* Square highlights - warm gold tones */
+square {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 12.5%;
+  height: 12.5%;
+  pointer-events: auto;
+}
+
+square.last-move {
+  background-color: rgba(212, 165, 116, 0.35);
+}
+
+square.selected {
+  background-color: rgba(212, 165, 116, 0.55);
+}
+
+square.check {
+  background: radial-gradient(
+    ellipse at center,
+    rgba(239, 68, 68, 0.9) 0%,
+    rgba(220, 38, 38, 0.7) 25%,
+    rgba(185, 28, 28, 0) 89%,
+    rgba(153, 27, 27, 0) 100%
+  );
+}
+
+square.move-dest {
+  background: radial-gradient(
+    rgba(212, 165, 116, 0.7) 19%,
+    rgba(212, 165, 116, 0.7) 20%,
+    rgba(0, 0, 0, 0) 21%
+  );
+}
+
+square.move-dest.oc {
+  background: radial-gradient(
+    transparent 0%,
+    transparent 79%,
+    rgba(212, 165, 116, 0.5) 80%
+  );
+}
+
+square.move-dest:hover {
+  background: rgba(212, 165, 116, 0.4);
+}
+
+/* Premove highlight — Chess.com red (#f42a32 @ 50%) */
+square.premove {
+  background-color: rgba(244, 42, 50, 0.5);
+}
+
+/* Ghost piece */
+.ghost {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 12.5%;
+  height: 12.5%;
+  background-size: cover;
+  z-index: 1;
+  opacity: 0.3;
+  pointer-events: none;
+}
+
+/* Drag hover highlight */
+.drag-hover {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 12.5%;
+  height: 12.5%;
+  background-color: rgba(212, 165, 116, 0.4);
+  z-index: 1;
+  pointer-events: none;
+  visibility: hidden;
+  border-radius: 2px;
+}
+
+/* Piece animation - smooth glide via keyframes (runs on compositor thread) */
+@keyframes piece-move {
+  from { transform: translate(var(--from-x), var(--from-y)); }
+  to   { transform: translate(var(--to-x), var(--to-y)); }
+}
+
+piece.animating {
+  animation: piece-move 180ms ease-in-out forwards;
+  z-index: 10;
+}
+
+/* Captured piece fade-out */
+piece.fading {
+  opacity: 0;
+  transform: scale(0.5);
+  transition: opacity 150ms ease-out, transform 150ms ease-out;
+  pointer-events: none;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════ */
+/* COACH ANNOTATIONS - Arrows and Square Highlights                        */
+/* ═══════════════════════════════════════════════════════════════════════ */
+
+.cg-annotations {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 3;
+  overflow: visible;
+}
+
+/* Arrow styles */
+.cg-annotations .arrow {
+  opacity: 0.9;
+  transition: opacity 0.2s ease;
+}
+
+.cg-annotations .arrow-green {
+  stroke: rgba(74, 222, 128, 0.85);
+}
+
+.cg-annotations .arrow-red {
+  stroke: rgba(239, 68, 68, 0.85);
+}
+
+.cg-annotations .arrow-yellow {
+  stroke: rgba(250, 204, 21, 0.85);
+}
+
+.cg-annotations .arrow-blue {
+  stroke: rgba(59, 130, 246, 0.85);
+}
+
+/* Square highlight styles */
+.cg-annotations .highlight {
+  opacity: 0.9;
+  transition: opacity 0.2s ease;
+}
+
+.cg-annotations .highlight-green {
+  fill: rgba(74, 222, 128, 0.4);
+}
+
+.cg-annotations .highlight-red {
+  fill: rgba(239, 68, 68, 0.4);
+}
+
+.cg-annotations .highlight-yellow {
+  fill: rgba(250, 204, 21, 0.4);
+}
+
+.cg-annotations .highlight-blue {
+  fill: rgba(59, 130, 246, 0.4);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════ */
+/* SQUARE POSITION CLASSES — CSS-driven positioning (no JS calculation)    */
+/* ═══════════════════════════════════════════════════════════════════════ */
+
+/* White orientation (default) */
+piece.sq-a1, square.sq-a1 { transform: translate(0%, 700%); }
+piece.sq-b1, square.sq-b1 { transform: translate(100%, 700%); }
+piece.sq-c1, square.sq-c1 { transform: translate(200%, 700%); }
+piece.sq-d1, square.sq-d1 { transform: translate(300%, 700%); }
+piece.sq-e1, square.sq-e1 { transform: translate(400%, 700%); }
+piece.sq-f1, square.sq-f1 { transform: translate(500%, 700%); }
+piece.sq-g1, square.sq-g1 { transform: translate(600%, 700%); }
+piece.sq-h1, square.sq-h1 { transform: translate(700%, 700%); }
+
+piece.sq-a2, square.sq-a2 { transform: translate(0%, 600%); }
+piece.sq-b2, square.sq-b2 { transform: translate(100%, 600%); }
+piece.sq-c2, square.sq-c2 { transform: translate(200%, 600%); }
+piece.sq-d2, square.sq-d2 { transform: translate(300%, 600%); }
+piece.sq-e2, square.sq-e2 { transform: translate(400%, 600%); }
+piece.sq-f2, square.sq-f2 { transform: translate(500%, 600%); }
+piece.sq-g2, square.sq-g2 { transform: translate(600%, 600%); }
+piece.sq-h2, square.sq-h2 { transform: translate(700%, 600%); }
+
+piece.sq-a3, square.sq-a3 { transform: translate(0%, 500%); }
+piece.sq-b3, square.sq-b3 { transform: translate(100%, 500%); }
+piece.sq-c3, square.sq-c3 { transform: translate(200%, 500%); }
+piece.sq-d3, square.sq-d3 { transform: translate(300%, 500%); }
+piece.sq-e3, square.sq-e3 { transform: translate(400%, 500%); }
+piece.sq-f3, square.sq-f3 { transform: translate(500%, 500%); }
+piece.sq-g3, square.sq-g3 { transform: translate(600%, 500%); }
+piece.sq-h3, square.sq-h3 { transform: translate(700%, 500%); }
+
+piece.sq-a4, square.sq-a4 { transform: translate(0%, 400%); }
+piece.sq-b4, square.sq-b4 { transform: translate(100%, 400%); }
+piece.sq-c4, square.sq-c4 { transform: translate(200%, 400%); }
+piece.sq-d4, square.sq-d4 { transform: translate(300%, 400%); }
+piece.sq-e4, square.sq-e4 { transform: translate(400%, 400%); }
+piece.sq-f4, square.sq-f4 { transform: translate(500%, 400%); }
+piece.sq-g4, square.sq-g4 { transform: translate(600%, 400%); }
+piece.sq-h4, square.sq-h4 { transform: translate(700%, 400%); }
+
+piece.sq-a5, square.sq-a5 { transform: translate(0%, 300%); }
+piece.sq-b5, square.sq-b5 { transform: translate(100%, 300%); }
+piece.sq-c5, square.sq-c5 { transform: translate(200%, 300%); }
+piece.sq-d5, square.sq-d5 { transform: translate(300%, 300%); }
+piece.sq-e5, square.sq-e5 { transform: translate(400%, 300%); }
+piece.sq-f5, square.sq-f5 { transform: translate(500%, 300%); }
+piece.sq-g5, square.sq-g5 { transform: translate(600%, 300%); }
+piece.sq-h5, square.sq-h5 { transform: translate(700%, 300%); }
+
+piece.sq-a6, square.sq-a6 { transform: translate(0%, 200%); }
+piece.sq-b6, square.sq-b6 { transform: translate(100%, 200%); }
+piece.sq-c6, square.sq-c6 { transform: translate(200%, 200%); }
+piece.sq-d6, square.sq-d6 { transform: translate(300%, 200%); }
+piece.sq-e6, square.sq-e6 { transform: translate(400%, 200%); }
+piece.sq-f6, square.sq-f6 { transform: translate(500%, 200%); }
+piece.sq-g6, square.sq-g6 { transform: translate(600%, 200%); }
+piece.sq-h6, square.sq-h6 { transform: translate(700%, 200%); }
+
+piece.sq-a7, square.sq-a7 { transform: translate(0%, 100%); }
+piece.sq-b7, square.sq-b7 { transform: translate(100%, 100%); }
+piece.sq-c7, square.sq-c7 { transform: translate(200%, 100%); }
+piece.sq-d7, square.sq-d7 { transform: translate(300%, 100%); }
+piece.sq-e7, square.sq-e7 { transform: translate(400%, 100%); }
+piece.sq-f7, square.sq-f7 { transform: translate(500%, 100%); }
+piece.sq-g7, square.sq-g7 { transform: translate(600%, 100%); }
+piece.sq-h7, square.sq-h7 { transform: translate(700%, 100%); }
+
+piece.sq-a8, square.sq-a8 { transform: translate(0%, 0%); }
+piece.sq-b8, square.sq-b8 { transform: translate(100%, 0%); }
+piece.sq-c8, square.sq-c8 { transform: translate(200%, 0%); }
+piece.sq-d8, square.sq-d8 { transform: translate(300%, 0%); }
+piece.sq-e8, square.sq-e8 { transform: translate(400%, 0%); }
+piece.sq-f8, square.sq-f8 { transform: translate(500%, 0%); }
+piece.sq-g8, square.sq-g8 { transform: translate(600%, 0%); }
+piece.sq-h8, square.sq-h8 { transform: translate(700%, 0%); }
+
+/* Black orientation (flipped) */
+.flipped piece.sq-a1, .flipped square.sq-a1 { transform: translate(700%, 0%); }
+.flipped piece.sq-b1, .flipped square.sq-b1 { transform: translate(600%, 0%); }
+.flipped piece.sq-c1, .flipped square.sq-c1 { transform: translate(500%, 0%); }
+.flipped piece.sq-d1, .flipped square.sq-d1 { transform: translate(400%, 0%); }
+.flipped piece.sq-e1, .flipped square.sq-e1 { transform: translate(300%, 0%); }
+.flipped piece.sq-f1, .flipped square.sq-f1 { transform: translate(200%, 0%); }
+.flipped piece.sq-g1, .flipped square.sq-g1 { transform: translate(100%, 0%); }
+.flipped piece.sq-h1, .flipped square.sq-h1 { transform: translate(0%, 0%); }
+
+.flipped piece.sq-a2, .flipped square.sq-a2 { transform: translate(700%, 100%); }
+.flipped piece.sq-b2, .flipped square.sq-b2 { transform: translate(600%, 100%); }
+.flipped piece.sq-c2, .flipped square.sq-c2 { transform: translate(500%, 100%); }
+.flipped piece.sq-d2, .flipped square.sq-d2 { transform: translate(400%, 100%); }
+.flipped piece.sq-e2, .flipped square.sq-e2 { transform: translate(300%, 100%); }
+.flipped piece.sq-f2, .flipped square.sq-f2 { transform: translate(200%, 100%); }
+.flipped piece.sq-g2, .flipped square.sq-g2 { transform: translate(100%, 100%); }
+.flipped piece.sq-h2, .flipped square.sq-h2 { transform: translate(0%, 100%); }
+
+.flipped piece.sq-a3, .flipped square.sq-a3 { transform: translate(700%, 200%); }
+.flipped piece.sq-b3, .flipped square.sq-b3 { transform: translate(600%, 200%); }
+.flipped piece.sq-c3, .flipped square.sq-c3 { transform: translate(500%, 200%); }
+.flipped piece.sq-d3, .flipped square.sq-d3 { transform: translate(400%, 200%); }
+.flipped piece.sq-e3, .flipped square.sq-e3 { transform: translate(300%, 200%); }
+.flipped piece.sq-f3, .flipped square.sq-f3 { transform: translate(200%, 200%); }
+.flipped piece.sq-g3, .flipped square.sq-g3 { transform: translate(100%, 200%); }
+.flipped piece.sq-h3, .flipped square.sq-h3 { transform: translate(0%, 200%); }
+
+.flipped piece.sq-a4, .flipped square.sq-a4 { transform: translate(700%, 300%); }
+.flipped piece.sq-b4, .flipped square.sq-b4 { transform: translate(600%, 300%); }
+.flipped piece.sq-c4, .flipped square.sq-c4 { transform: translate(500%, 300%); }
+.flipped piece.sq-d4, .flipped square.sq-d4 { transform: translate(400%, 300%); }
+.flipped piece.sq-e4, .flipped square.sq-e4 { transform: translate(300%, 300%); }
+.flipped piece.sq-f4, .flipped square.sq-f4 { transform: translate(200%, 300%); }
+.flipped piece.sq-g4, .flipped square.sq-g4 { transform: translate(100%, 300%); }
+.flipped piece.sq-h4, .flipped square.sq-h4 { transform: translate(0%, 300%); }
+
+.flipped piece.sq-a5, .flipped square.sq-a5 { transform: translate(700%, 400%); }
+.flipped piece.sq-b5, .flipped square.sq-b5 { transform: translate(600%, 400%); }
+.flipped piece.sq-c5, .flipped square.sq-c5 { transform: translate(500%, 400%); }
+.flipped piece.sq-d5, .flipped square.sq-d5 { transform: translate(400%, 400%); }
+.flipped piece.sq-e5, .flipped square.sq-e5 { transform: translate(300%, 400%); }
+.flipped piece.sq-f5, .flipped square.sq-f5 { transform: translate(200%, 400%); }
+.flipped piece.sq-g5, .flipped square.sq-g5 { transform: translate(100%, 400%); }
+.flipped piece.sq-h5, .flipped square.sq-h5 { transform: translate(0%, 400%); }
+
+.flipped piece.sq-a6, .flipped square.sq-a6 { transform: translate(700%, 500%); }
+.flipped piece.sq-b6, .flipped square.sq-b6 { transform: translate(600%, 500%); }
+.flipped piece.sq-c6, .flipped square.sq-c6 { transform: translate(500%, 500%); }
+.flipped piece.sq-d6, .flipped square.sq-d6 { transform: translate(400%, 500%); }
+.flipped piece.sq-e6, .flipped square.sq-e6 { transform: translate(300%, 500%); }
+.flipped piece.sq-f6, .flipped square.sq-f6 { transform: translate(200%, 500%); }
+.flipped piece.sq-g6, .flipped square.sq-g6 { transform: translate(100%, 500%); }
+.flipped piece.sq-h6, .flipped square.sq-h6 { transform: translate(0%, 500%); }
+
+.flipped piece.sq-a7, .flipped square.sq-a7 { transform: translate(700%, 600%); }
+.flipped piece.sq-b7, .flipped square.sq-b7 { transform: translate(600%, 600%); }
+.flipped piece.sq-c7, .flipped square.sq-c7 { transform: translate(500%, 600%); }
+.flipped piece.sq-d7, .flipped square.sq-d7 { transform: translate(400%, 600%); }
+.flipped piece.sq-e7, .flipped square.sq-e7 { transform: translate(300%, 600%); }
+.flipped piece.sq-f7, .flipped square.sq-f7 { transform: translate(200%, 600%); }
+.flipped piece.sq-g7, .flipped square.sq-g7 { transform: translate(100%, 600%); }
+.flipped piece.sq-h7, .flipped square.sq-h7 { transform: translate(0%, 600%); }
+
+.flipped piece.sq-a8, .flipped square.sq-a8 { transform: translate(700%, 700%); }
+.flipped piece.sq-b8, .flipped square.sq-b8 { transform: translate(600%, 700%); }
+.flipped piece.sq-c8, .flipped square.sq-c8 { transform: translate(500%, 700%); }
+.flipped piece.sq-d8, .flipped square.sq-d8 { transform: translate(400%, 700%); }
+.flipped piece.sq-e8, .flipped square.sq-e8 { transform: translate(300%, 700%); }
+.flipped piece.sq-f8, .flipped square.sq-f8 { transform: translate(200%, 700%); }
+.flipped piece.sq-g8, .flipped square.sq-g8 { transform: translate(100%, 700%); }
+.flipped piece.sq-h8, .flipped square.sq-h8 { transform: translate(0%, 700%); }
+
+/* Pool spare — hidden */
+piece.pool-spare, square.pool-spare {
+  display: none;
+}
+
