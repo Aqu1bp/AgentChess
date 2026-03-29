@@ -174,22 +174,25 @@ CANDIDATES:
 """
 
 
-CRITIC_PROMPT = """You are WHITE. BLACK just played {move} in this position:
+CRITIC_PROMPT = """You are WHITE analyzing BLACK's candidate moves.
 
 BOARD BRIEF:
 {board_brief}
 
-BLACK'S INTENDED LINE:
-{line}
+BLACK'S CANDIDATES:
+{candidates_detail}
 
-Find White's BEST response. Look for:
+For EACH candidate, find White's best punishment. Look for:
 - Captures that win material
 - Checks that fork pieces
 - Moves that trap or attack multiple pieces
+- Does Black's intended line actually work, or can you refute it?
 
-Return EXACTLY:
-WHITE'S BEST REPLY: <san or uci>
-REASONING: <what this achieves>
+Return EXACTLY (one entry per candidate):
+CRITIC:
+1. <black_move_san>: WHITE_REPLY: <san> | VERDICT: <SOUND|PUNISHABLE> | REASONING: <why>
+2. <black_move_san>: WHITE_REPLY: <san> | VERDICT: <SOUND|PUNISHABLE> | REASONING: <why>
+3. <black_move_san>: WHITE_REPLY: <san> | VERDICT: <SOUND|PUNISHABLE> | REASONING: <why>
 """
 
 
@@ -249,11 +252,29 @@ def parse_move_token(board: chess.Board, token: str) -> chess.Move | None:
 
 
 def parse_critic_reply(text: str) -> tuple[str | None, str]:
+    """Legacy single-move parser (kept for compatibility)."""
     reply_match = re.search(r"WHITE'S BEST REPLY:\s*(.+)", text or "", re.MULTILINE)
     reasoning_match = re.search(r"REASONING:\s*(.+)", text or "", re.MULTILINE)
     reply = reply_match.group(1).strip() if reply_match else None
     reasoning = reasoning_match.group(1).strip() if reasoning_match else ""
     return reply, reasoning
+
+
+def parse_batch_critic(text: str) -> dict[str, dict]:
+    """Parse batch critic: {san: {white_reply, verdict, reasoning}}."""
+    results = {}
+    pattern = re.compile(
+        r"(\d+)\.\s*(\S+):\s*WHITE_REPLY:\s*(\S+)\s*\|\s*VERDICT:\s*(SOUND|PUNISHABLE)\s*\|\s*REASONING:\s*(.+)",
+        re.MULTILINE,
+    )
+    for match in pattern.finditer(text or ""):
+        san = match.group(2).rstrip(":")
+        results[san] = {
+            "white_reply": match.group(3).strip(),
+            "verdict": match.group(4).strip(),
+            "reasoning": match.group(5).strip(),
+        }
+    return results
 
 
 def describe_piece_lines(title: str, pieces: list[dict]) -> list[str]:
@@ -699,53 +720,72 @@ def build_critic_summary(results: list[dict], label: str) -> str:
 
 
 def apply_critic_feedback(board: chess.Board, board_brief: str, provider, results: list[dict]) -> str | None:
+    """Single LLM call to critique all passing candidates at once."""
     passing = [result for result in results if result["validation"]["passed"]]
     if len(passing) < 2:
         return None
 
     mover_color = board.turn
+
+    # Build candidate detail for the single critic prompt
+    detail_lines = []
+    for i, result in enumerate(passing):
+        v = result["validation"]
+        c = result["candidate"]
+        line = c.get("line") or "No line provided."
+        detail_lines.append(f"{i+1}. {v['san']}: LINE: {line} | REASONING: {c.get('reasoning', 'none')}")
+
+    prompt = CRITIC_PROMPT.format(
+        board_brief=board_brief,
+        candidates_detail="\n".join(detail_lines),
+    )
+    raw = provider.call(prompt)
+    critiques = parse_batch_critic(raw)
+
+    # Apply penalties based on critic verdicts + deterministic verification
     any_note = False
     for result in passing:
         validation = result["validation"]
-        candidate = result["candidate"]
-        board_after = board.copy()
-        board_after.push(chess.Move.from_uci(validation["uci"]))
+        san = validation["san"]
+        critique = critiques.get(san, {})
 
-        baseline = worst_capture_balance_after_response(board_after, mover_color)
-        prompt = CRITIC_PROMPT.format(
-            move=f"{validation['san']} ({validation['uci']})",
-            board_brief=board_brief,
-            line=candidate.get("line") or "No line provided.",
-        )
-        raw = provider.call(prompt)
-        reply_token, reasoning = parse_critic_reply(raw)
+        if not critique:
+            result["critic_penalty"] = 0
+            result["critic_note"] = "Critic did not evaluate this move."
+            continue
 
-        note = "Critic response could not be parsed."
+        white_reply = critique.get("white_reply", "")
+        verdict = critique.get("verdict", "SOUND")
+        reasoning = critique.get("reasoning", "")
+
+        # Verify the critic's suggested reply deterministically
+        note = f"Critic: {verdict}. White reply: {white_reply}. {reasoning}"
         penalty = 0
-        if reply_token:
-            reply_move = parse_move_token(board_after, reply_token)
-            if reply_move is None:
-                note = f"Critic suggested {reply_token}, which could not be parsed."
-            else:
-                reply_san = board_after.san(reply_move)
+
+        if verdict == "PUNISHABLE" and white_reply:
+            board_after = board.copy()
+            board_after.push(chess.Move.from_uci(validation["uci"]))
+            reply_move = parse_move_token(board_after, white_reply)
+
+            if reply_move:
+                baseline = worst_capture_balance_after_response(board_after, mover_color)
                 reply_board = board_after.copy()
                 reply_board.push(reply_move)
+
                 if reply_board.is_checkmate():
                     penalty = 1
-                    note = f"Critic found {reply_san}, which is immediate mate."
+                    note = f"Critic found {white_reply} = checkmate. {reasoning}"
                 else:
                     if reply_board.is_check():
-                        post_reply_balance = best_evasion_balance_after_check(reply_board, mover_color)
+                        post_balance = best_evasion_balance_after_check(reply_board, mover_color)
                     else:
-                        post_reply_balance = best_immediate_recapture_balance(reply_board, mover_color)
-                    extra_loss = baseline - post_reply_balance
+                        post_balance = best_immediate_recapture_balance(reply_board, mover_color)
+                    extra_loss = baseline - post_balance
                     if extra_loss >= 2:
                         penalty = 1
-                        note = f"Critic found {reply_san}, worsening material by {extra_loss} beyond baseline."
+                        note = f"Critic found {white_reply}, material loss {extra_loss}. {reasoning}"
                     else:
-                        note = f"Critic suggested {reply_san}, but it does not worsen material beyond baseline."
-                if reasoning:
-                    note = f"{note} {reasoning}"
+                        note = f"Critic flagged {white_reply} as punishable, but deterministic check shows no material loss. {reasoning}"
 
         result["critic_penalty"] = penalty
         result["critic_note"] = note

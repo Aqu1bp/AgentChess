@@ -361,6 +361,23 @@ def best_evasion_balance_after_check(board: chess.Board, color: chess.Color) -> 
     return best if found_evasion else material_balance(board, color)
 
 
+def can_capture_reply_piece_safely(board: chess.Board, target_square: int, color: chess.Color) -> bool:
+    """
+    Return True if `color` can legally capture the piece on `target_square` and
+    stay at or above the current material balance after the opponent's strongest
+    immediate capture sequence.
+    """
+    baseline = material_balance(board, color)
+    for move in board.legal_moves:
+        if move.to_square != target_square or not board.is_capture(move):
+            continue
+        next_board = board.copy()
+        next_board.push(move)
+        if worst_capture_balance_after_response(next_board, color) >= baseline:
+            return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
@@ -1025,12 +1042,19 @@ def cmd_validate(board: chess.Board, move_str: str, as_json: bool = False) -> st
                         })
             if len(forked_pieces) >= 2:
                 # King + major/minor fork
+                forker_capturable = can_capture_reply_piece_safely(
+                    reply_board, reply.to_square, mover_color
+                )
                 has_king = any(p["is_king"] for p in forked_pieces)
                 total_value = sum(p["value"] for p in forked_pieces if not p["is_king"])
                 fork_desc = ", ".join(p["piece"] for p in forked_pieces)
                 quiet_threats.append(f"forks {fork_desc}")
                 severity += total_value
-                if has_king and total_value >= 3:
+                if forker_capturable:
+                    warnings.append(
+                        f"{reply_san} appears to fork {fork_desc}, but the forking piece can be captured immediately."
+                    )
+                elif has_king and total_value >= 3:
                     # King + piece fork — after Black moves king, opponent captures the piece
                     hard_failures.append(
                         f"{reply_san} forks {fork_desc}. King must move, losing material."

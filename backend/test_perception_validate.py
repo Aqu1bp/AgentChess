@@ -78,6 +78,18 @@ class ValidateMoveTests(unittest.TestCase):
         self.assertIn("Bb5+", [item["san"] for item in result["opponent_checks"]])
         self.assertFalse(any("every evasion loses material beyond baseline" in item for item in result["hard_failures"]))
 
+    def test_capturable_non_check_fork_is_not_a_hard_failure(self):
+        board = chess.Board("1n1q2k1/7p/8/8/8/8/7B/6K1 b - - 0 1")
+
+        result = cmd_validate(board, "h6", as_json=True)
+
+        self.assertTrue(result["passed"], result["hard_failures"])
+        self.assertIn("Bc7", [item["san"] for item in result["quiet_hostile_replies"]])
+        self.assertFalse(any("forks Nb8, Qd8 with undefended target(s)." in item for item in result["hard_failures"]))
+        self.assertTrue(
+            any("forking piece can be captured immediately" in item for item in result["warnings"])
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
