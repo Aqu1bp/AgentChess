@@ -962,6 +962,12 @@ def cmd_validate(board: chess.Board, move_str: str, as_json: bool = False) -> st
         if is_checkmate:
             hard_failures.append(f"{reply_san} is immediate checkmate for {enemy_name}.")
 
+        # Checks are fully handled by check-evasion analysis above.
+        # Skip quiet hostile reply analysis for checks — it would double-count
+        # and miss that Black can recapture/evade the checking piece.
+        if is_check:
+            continue
+
         if reply_capture_label:
             free_win = best_immediate_recapture_balance(reply_board, mover_color) < baseline_balance
             opponent_captures.append({
@@ -1082,18 +1088,18 @@ def cmd_validate(board: chess.Board, move_str: str, as_json: bool = False) -> st
                 # Check: after opponent takes, can mover recapture?
                 capturers = get_legal_attackers(reply_board, h_sq, enemy_color)
                 if capturers:
-                    # Simulate opponent capture
-                    # Use a hypothetical: place enemy turn, capture, check recapture
+                    # Check ALL captures of the hanging piece — any free win means it's lost
                     hypo = reply_board.copy()
                     hypo.turn = enemy_color
+                    baseline_bal = material_balance(reply_board, mover_color)
                     for cap_move in hypo.legal_moves:
                         if cap_move.to_square == h_sq and hypo.is_capture(cap_move):
                             cap_board = hypo.copy()
                             cap_board.push(cap_move)
                             recapture_bal = best_immediate_recapture_balance(cap_board, mover_color)
-                            if recapture_bal < material_balance(reply_board, mover_color):
+                            if recapture_bal < baseline_bal:
                                 is_free_loss = True
-                            break
+                                break  # found a free win — no need to check more
 
             if is_free_loss and max_hanging_value >= 5:
                 hard_failures.append(
