@@ -91,17 +91,15 @@ _cache: dict[str, Optional[dict]] = {}
 
 
 def _get_token() -> str:
-    token = os.environ.get("LICHESS_TOKEN", "")
-    if token:
-        return token
-    token = os.environ.get("VITE_LICHESS_TOKEN", "")
-    if token:
-        return token
-    # Try EvalMax .env
-    env_path = Path(__file__).parent.parent.parent / "axp1246" / ".env"
-    if env_path.exists():
-        for line in env_path.read_text().splitlines():
-            if line.startswith("VITE_LICHESS_TOKEN="):
+    """Get Lichess token from env vars or local .env. Never reads foreign project files."""
+    token = os.environ.get("LICHESS_TOKEN") or os.environ.get("VITE_LICHESS_TOKEN") or ""
+    if token.strip():
+        return token.strip()
+    # Fallback: read from our own backend/.env (not foreign projects)
+    local_env = Path(__file__).parent / ".env"
+    if local_env.exists():
+        for line in local_env.read_text().splitlines():
+            if line.startswith("LICHESS_TOKEN="):
                 return line.split("=", 1)[1].strip()
     return ""
 
@@ -177,11 +175,6 @@ def _is_in_repertoire(opening_name: Optional[str], board: chess.Board) -> bool:
         return board.ply() <= 2
 
     name_lower = opening_name.lower()
-
-    # Check against our allowed families
-    if board.ply() <= 2:
-        # First moves — check if our response is the Caro/QGD family
-        return True  # we control the first move via FIRST_MOVE_RESPONSES
 
     # Check Caro-Kann family (vs e4)
     for prefix in CARO_KANN_PREFIXES:
