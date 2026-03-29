@@ -967,10 +967,13 @@ def cmd_validate(board: chess.Board, move_str: str, as_json: bool = False) -> st
         if is_check:
             opponent_checks.append({"san": reply_san, "uci": reply_uci, "checkmate": is_checkmate})
         if is_check and not is_checkmate:
-            warnings.append(f"{reply_san} gives check.")
             pre_check_baseline = worst_capture_balance_after_response(post_move, mover_color)
             best_evasion_balance = best_evasion_balance_after_check(reply_board, mover_color)
             new_material_loss = pre_check_baseline - best_evasion_balance
+            # Only warn about checks that actually cost us material or are neutral.
+            # Suicide checks (opponent loses their piece) are not threats.
+            if new_material_loss > 0:
+                warnings.append(f"{reply_san} gives check.")
             if new_material_loss >= 2:
                 hard_failures.append(
                     f"{reply_san} check — every evasion loses material beyond baseline "
@@ -996,7 +999,7 @@ def cmd_validate(board: chess.Board, move_str: str, as_json: bool = False) -> st
             })
             if free_win:
                 message = f"{reply_san} wins {reply_capture_label} with no immediate equalizing recapture."
-                if reply_capture_value >= 3:
+                if reply_capture_value >= 5:
                     hard_failures.append(message)
                 else:
                     warnings.append(message)
@@ -1080,7 +1083,7 @@ def cmd_validate(board: chess.Board, move_str: str, as_json: bool = False) -> st
                 )
                 severity += net_loss
 
-        # (d) New hanging pieces after the reply
+        # (d) New hanging pieces after the reply — warning only
         new_hanging = []
         for piece in collect_hanging_pieces(reply_board, mover_color, min_value=3):
             if piece["square"] not in baseline_hanging:
@@ -1090,49 +1093,7 @@ def cmd_validate(board: chess.Board, move_str: str, as_json: bool = False) -> st
             max_hanging_value = max(piece["value"] for piece in new_hanging)
             quiet_threats.append(f"creates a new hanging {mover_name} piece: {squares}")
             severity += max_hanging_value
-
-            # Check if the hanging piece can be saved:
-            # 1. Can the mover move the hanging piece to safety?
-            # 2. If not, after opponent captures it, can the mover recapture equally?
-            is_free_loss = False
-            for h_piece in new_hanging:
-                h_sq = chess.parse_square(h_piece["square"])
-                # Can the piece escape? (mover's turn — check if it has safe moves)
-                escape_moves = safe_moves_for_piece(reply_board, h_sq, mover_color)
-                if escape_moves:
-                    continue  # piece can escape — not a free loss
-
-                # Piece can't escape. After mover passes, can opponent capture it freely?
-                # Simulate: mover does something else, opponent captures the hanging piece
-                # Use worst_capture_balance: if opponent capturing gives a net loss, it's free
-                # But we're at mover's turn. We need to check: on opponent's NEXT turn,
-                # does capturing the hanging piece win material?
-                # Simpler: the piece is hanging (attacked, no defenders, can't escape).
-                # If opponent captures it, mover needs a recapture on that square.
-                # Check: after opponent takes, can mover recapture?
-                capturers = get_legal_attackers(reply_board, h_sq, enemy_color)
-                if capturers:
-                    # Check ALL captures of the hanging piece — any free win means it's lost
-                    hypo = reply_board.copy()
-                    hypo.turn = enemy_color
-                    baseline_bal = material_balance(reply_board, mover_color)
-                    for cap_move in hypo.legal_moves:
-                        if cap_move.to_square == h_sq and hypo.is_capture(cap_move):
-                            cap_board = hypo.copy()
-                            cap_board.push(cap_move)
-                            recapture_bal = best_immediate_recapture_balance(cap_board, mover_color)
-                            if recapture_bal < baseline_bal:
-                                is_free_loss = True
-                                break  # found a free win — no need to check more
-
-            if is_free_loss and max_hanging_value >= 3:
-                hard_failures.append(
-                    f"{reply_san} creates a freely capturable {mover_name} piece worth {max_hanging_value}: {squares}."
-                )
-            elif is_free_loss:
-                warnings.append(f"{reply_san} creates a freely capturable {mover_name} piece: {squares}.")
-            else:
-                warnings.append(f"{reply_san} creates a new hanging {mover_name} piece: {squares}.")
+            warnings.append(f"{reply_san} creates a new hanging {mover_name} piece: {squares}.")
 
         if quiet_threats:
             quiet_hostile_replies.append({

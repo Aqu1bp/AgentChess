@@ -37,9 +37,9 @@ CORPUS = [
         "id": "game2_oo_rook_loss",
         "fen": "rnbqk2r/pp2bppp/4pn2/1NpP4/5B2/4P3/PPP2PPP/R2QKBNR b KQkq - 0 6",
         "test_move": "O-O",
-        "expected_pass": False,
+        "expected_pass": None,
         "motif": "non-check-quiet-threat",
-        "note": "O-O allows Nc7 creating a hanging rook on a8 (value 5). Now hard-fails.",
+        "note": "O-O allows Nc7 creating hanging rook. Now warning-only (freely capturable removed).",
     },
     # --- Standard openings after 1.e4 ---
     {

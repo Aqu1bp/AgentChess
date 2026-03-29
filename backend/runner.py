@@ -307,6 +307,19 @@ def _compute_white_threats(board: chess.Board) -> list[str]:
             san = hypo.san(move)
             is_capture = hypo.is_capture(move)
             is_mate = hypo2.is_checkmate()
+
+            # Skip suicide checks — if Black can capture the checking piece for free
+            if not is_mate:
+                checking_sq = move.to_square
+                checking_piece_val = PIECE_VALUES.get(hypo2.piece_at(checking_sq).piece_type, 0) if hypo2.piece_at(checking_sq) else 0
+                can_capture_checker = False
+                for resp in hypo2.legal_moves:
+                    if resp.to_square == checking_sq and hypo2.is_capture(resp):
+                        can_capture_checker = True
+                        break
+                if can_capture_checker and checking_piece_val >= 3:
+                    continue  # suicide check — skip
+
             # What does this check also attack? (fork detection)
             attacked_black = []
             to_sq = move.to_square
@@ -743,16 +756,19 @@ def find_result_by_choice_token(board: chess.Board, passing: list[dict], token: 
 def apply_critic_choice(board: chess.Board, board_brief: str, provider, results: list[dict]) -> tuple[str | None, dict | None]:
     """Single LLM call to choose among survivors or propose one validated override."""
     passing = [result for result in results if result["validation"]["passed"]]
-    considered = passing if passing else results
-    if not considered:
+    if not results:
         return None, None
 
+    # Always show ALL candidates — passing and failed — so the critic can
+    # rescue a good move that failed on a technicality (e.g., illegal LINE).
+    considered = results
+
     critic_mode = (
-        "These candidate moves already passed a minimal tactical referee. "
-        "Choose one survivor or override with one better BLACK move of your own."
-        if passing else
         "All proposer candidates failed the minimal tactical referee. "
         "Review the rejected candidates and their failure reasons, then OVERRIDE with one better BLACK move of your own."
+        if not passing else
+        "Some candidates passed and some failed the tactical referee. "
+        "Choose one of the passing moves, or if a failed move looks correct despite its rejection reason, OVERRIDE with it."
     )
 
     detail_lines = []

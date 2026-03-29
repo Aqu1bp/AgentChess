@@ -37,12 +37,12 @@ class ValidateMoveTests(unittest.TestCase):
         self.assertTrue(result["passed"], f"O-O should pass in this position: {result['hard_failures']}")
         self.assertEqual(result["uci"], "e8g8")
 
-    def test_quiet_trap_reply_is_detected(self):
+    def test_quiet_trap_reply_is_warning(self):
+        """Quiet trap is a warning, not a hard fail."""
         board = chess.Board("4k3/8/2n5/3B4/8/3P4/PP6/6K1 b - - 0 1")
         result = cmd_validate(board, "c6a5", as_json=True)
-        self.assertFalse(result["passed"])
-        self.assertIn("b4 creates a freely capturable black piece worth 3: black knight on a5.", result["hard_failures"])
-        self.assertTrue(any("b4 traps the moved piece on a5" in item for item in result["warnings"]))
+        self.assertTrue(result["passed"])
+        self.assertTrue(any("b4 traps the moved piece on a5" in w for w in result["warnings"]))
         self.assertEqual(result["quiet_hostile_replies"][0]["san"], "b4")
 
     def test_immediate_mate_reply_is_detected(self):
@@ -51,11 +51,12 @@ class ValidateMoveTests(unittest.TestCase):
         self.assertFalse(result["passed"])
         self.assertIn("Qxf7# is immediate checkmate for White.", result["hard_failures"])
 
-    def test_free_piece_loss_is_detected(self):
+    def test_free_minor_piece_loss_is_warning(self):
+        """Free minor piece loss (value < 5) is a warning, not a hard fail."""
         board = chess.Board("4k3/8/2n5/8/8/P7/8/6K1 b - - 0 1")
         result = cmd_validate(board, "c6b4", as_json=True)
-        self.assertFalse(result["passed"])
-        self.assertIn("axb4 wins black knight with no immediate equalizing recapture.", result["hard_failures"])
+        self.assertTrue(result["passed"])
+        self.assertTrue(any("wins black knight" in w for w in result["warnings"]))
 
     def test_check_fork_with_losing_evasions_is_detected(self):
         board = chess.Board()
