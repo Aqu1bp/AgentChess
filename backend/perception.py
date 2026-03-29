@@ -714,6 +714,159 @@ def cmd_query(board: chess.Board, square_str: str, as_json: bool = False) -> str
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------
+# Claim verification — check proposer's claimed LINE and WHITE_THREAT
+# ---------------------------------------------------------------------------
+
+def verify_claimed_line(board: chess.Board, candidate_move_str: str, line_tokens: list[str]) -> dict:
+    """
+    Verify the proposer's claimed line.
+    Rules:
+    - First ply must normalize to the proposed move
+    - All plies must be legal in sequence
+    - If legal, compute material outcome at the end
+    Returns dict with: valid, hard_failures, warnings, material_outcome, resulting_fen
+    """
+    hard_failures = []
+    warnings = []
+
+    if not line_tokens:
+        return {"valid": True, "hard_failures": [], "warnings": ["No LINE provided."],
+                "material_outcome": None, "resulting_fen": None}
+
+    sim = board.copy()
+    candidate_move = parse_move(board, candidate_move_str)
+    if candidate_move is None:
+        return {"valid": False, "hard_failures": ["Candidate move itself is illegal."],
+                "warnings": [], "material_outcome": None, "resulting_fen": None}
+
+    # Check first ply matches the candidate
+    first_move = parse_move(sim, line_tokens[0])
+    if first_move is None:
+        hard_failures.append(f"LINE ply 1 '{line_tokens[0]}' is not a legal move.")
+        return {"valid": False, "hard_failures": hard_failures, "warnings": [],
+                "material_outcome": None, "resulting_fen": None}
+
+    if first_move != candidate_move:
+        # Try normalizing both to UCI
+        if first_move.uci() != candidate_move.uci():
+            hard_failures.append(
+                f"LINE ply 1 '{line_tokens[0]}' does not match candidate move "
+                f"'{candidate_move_str}' (got {first_move.uci()} vs {candidate_move.uci()})."
+            )
+            return {"valid": False, "hard_failures": hard_failures, "warnings": [],
+                    "material_outcome": None, "resulting_fen": None}
+
+    # Simulate all plies
+    mat_before = material_balance(board, board.turn)
+    for i, token in enumerate(line_tokens):
+        move = parse_move(sim, token)
+        if move is None:
+            hard_failures.append(f"LINE ply {i+1} '{token}' is illegal at position {sim.fen()}.")
+            return {"valid": False, "hard_failures": hard_failures, "warnings": warnings,
+                    "material_outcome": None, "resulting_fen": sim.fen()}
+        sim.push(move)
+
+    mat_after = material_balance(sim, board.turn)
+    material_outcome = mat_after - mat_before
+
+    if material_outcome <= -2:
+        warnings.append(f"Claimed LINE loses material (delta: {material_outcome}).")
+
+    return {
+        "valid": True,
+        "hard_failures": hard_failures,
+        "warnings": warnings,
+        "material_outcome": material_outcome,
+        "resulting_fen": sim.fen(),
+    }
+
+
+def verify_white_threat(board_after_move: chess.Board, threat_token: str) -> dict:
+    """
+    Verify the proposer's claimed WHITE_THREAT.
+    Rules:
+    - Must normalize to a legal White reply from the post-move position
+    - If legal, simulate it and evaluate whether it creates a tactical problem
+    - If it's a real strong threat, report it; if harmless, flag as claim mismatch
+    Returns dict with: valid, is_real_threat, hard_failures, warnings, explanation
+    """
+    hard_failures = []
+    warnings = []
+
+    if not threat_token or threat_token.lower() in ("none", "-", "n/a"):
+        return {"valid": True, "is_real_threat": False, "hard_failures": [],
+                "warnings": ["No WHITE_THREAT claimed."], "explanation": "No threat claimed."}
+
+    # Must be White's turn in the post-move position
+    if board_after_move.turn != chess.WHITE:
+        return {"valid": False, "is_real_threat": False,
+                "hard_failures": ["WHITE_THREAT check: not White's turn in post-move position."],
+                "warnings": [], "explanation": "Internal error: wrong turn."}
+
+    threat_move = parse_move(board_after_move, threat_token)
+    if threat_move is None:
+        hard_failures.append(f"WHITE_THREAT '{threat_token}' is not a legal White move.")
+        return {"valid": False, "is_real_threat": False, "hard_failures": hard_failures,
+                "warnings": [], "explanation": f"'{threat_token}' is illegal."}
+
+    # Simulate the threat
+    mover_color = not board_after_move.turn  # Black (we're checking White's threat against Black)
+    pre_threat = material_balance(board_after_move, mover_color)
+
+    threat_board = board_after_move.copy()
+    threat_san = board_after_move.san(threat_move)
+    threat_board.push(threat_move)
+
+    is_check = threat_board.is_check()
+    is_mate = threat_board.is_checkmate()
+    is_capture = board_after_move.is_capture(threat_move)
+
+    # Evaluate severity using existing helpers
+    post_threat = worst_capture_balance_after_response(threat_board, mover_color)
+    material_loss = pre_threat - post_threat
+
+    is_real_threat = False
+    explanation = f"{threat_san} is legal."
+
+    if is_mate:
+        is_real_threat = True
+        explanation = f"{threat_san} is CHECKMATE — this is a critical threat."
+    elif material_loss >= 2:
+        is_real_threat = True
+        explanation = f"{threat_san} forces material loss of {material_loss} for Black."
+    elif is_check:
+        # Check that doesn't lose material — moderate threat
+        is_real_threat = True
+        explanation = f"{threat_san} gives check."
+    elif is_capture:
+        captured = board_after_move.piece_at(threat_move.to_square)
+        cap_val = PIECE_VALUES.get(captured.piece_type, 0) if captured else 0
+        if cap_val >= 3:
+            is_real_threat = True
+            explanation = f"{threat_san} captures a {PIECE_NAMES.get(captured.piece_type, 'piece')}."
+        else:
+            explanation = f"{threat_san} captures a pawn — minor threat."
+    else:
+        # Quiet move — check if it creates tactical problems
+        if material_loss >= 1:
+            is_real_threat = True
+            explanation = f"{threat_san} creates tactical pressure (material risk: {material_loss})."
+        else:
+            warnings.append(f"Claimed WHITE_THREAT '{threat_san}' appears harmless.")
+            explanation = f"{threat_san} does not create an immediate tactical problem."
+
+    return {
+        "valid": True,
+        "is_real_threat": is_real_threat,
+        "hard_failures": hard_failures,
+        "warnings": warnings,
+        "explanation": explanation,
+        "threat_san": threat_san,
+        "material_loss": material_loss,
+    }
+
+
 def cmd_validate(board: chess.Board, move_str: str, as_json: bool = False) -> str | dict:
     """Validate a candidate move against deterministic tactical guardrails."""
     move = parse_move(board, move_str)

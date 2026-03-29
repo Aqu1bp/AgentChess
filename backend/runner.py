@@ -22,6 +22,8 @@ from perception import (
     best_immediate_recapture_balance,
     cmd_state,
     cmd_validate,
+    verify_claimed_line,
+    verify_white_threat,
     worst_capture_balance_after_response,
 )
 from opening_book import get_book_move
@@ -131,14 +133,16 @@ Rules:
 - Use the grounded board brief only. Do not invent pieces or squares.
 - Prefer strategically coherent moves, not just short-term tactics.
 - Avoid moves that leave material hanging or walk into obvious tactical shots.
+- WHITE_THREAT must be a single concrete White move you think is most dangerous after your move. Check the WHITE'S MOST DANGEROUS IDEAS section for guidance.
+- LINE must be exactly 3 plies: your move, White's likely reply, your follow-up. All must be legal.
 - If you are unsure about the UCI, the SAN still needs to be correct.
 - Return exactly 3 ranked moves in the exact format below.
 
 Format EXACTLY:
 CANDIDATES:
-1. MOVE: <uci> (SAN: <san>) | LINE: <move1> <reply1> <move2> | REASONING: <why this is best>
-2. MOVE: <uci> (SAN: <san>) | LINE: <move1> <reply1> <move2> | REASONING: <why this is next>
-3. MOVE: <uci> (SAN: <san>) | LINE: <move1> <reply1> <move2> | REASONING: <why this is third>
+1. MOVE: <uci> (SAN: <san>) | LINE: <black_move> <white_reply> <black_followup> | WHITE_THREAT: <white_move_san> | REASONING: <why this is best>
+2. MOVE: <uci> (SAN: <san>) | LINE: <black_move> <white_reply> <black_followup> | WHITE_THREAT: <white_move_san> | REASONING: <why this is next>
+3. MOVE: <uci> (SAN: <san>) | LINE: <black_move> <white_reply> <black_followup> | WHITE_THREAT: <white_move_san> | REASONING: <why this is third>
 """
 
 
@@ -155,15 +159,18 @@ FAILED CANDIDATES:
 Pick 3 DIFFERENT moves. Do not repeat any failed move.
 
 Rules:
-- Use the rejection reasons as hard constraints.
+- Use the rejection reasons as hard constraints. Pay attention to whether the rejection was:
+  - a TACTICAL failure (opponent had a winning reply you missed)
+  - a CLAIM failure (your LINE was illegal or your WHITE_THREAT was wrong)
+  - a SAFETY failure (your piece was left hanging or trapped)
 - Keep using chess judgment: opening knowledge, tactical awareness, strategic plans.
 - Return exactly 3 ranked moves in the exact format below.
 
 Format EXACTLY:
 CANDIDATES:
-1. MOVE: <uci> (SAN: <san>) | LINE: <move1> <reply1> <move2> | REASONING: <why this avoids the failures>
-2. MOVE: <uci> (SAN: <san>) | LINE: <move1> <reply1> <move2> | REASONING: <why this avoids the failures>
-3. MOVE: <uci> (SAN: <san>) | LINE: <move1> <reply1> <move2> | REASONING: <why this avoids the failures>
+1. MOVE: <uci> (SAN: <san>) | LINE: <black_move> <white_reply> <black_followup> | WHITE_THREAT: <white_move_san> | REASONING: <why this avoids the failures>
+2. MOVE: <uci> (SAN: <san>) | LINE: <black_move> <white_reply> <black_followup> | WHITE_THREAT: <white_move_san> | REASONING: <why this avoids the failures>
+3. MOVE: <uci> (SAN: <san>) | LINE: <black_move> <white_reply> <black_followup> | WHITE_THREAT: <white_move_san> | REASONING: <why this avoids the failures>
 """
 
 
@@ -193,16 +200,26 @@ REASONING: <what this achieves>
 def parse_candidates(text: str) -> list[dict]:
     candidates = []
     seen = set()
-    line_pattern = re.compile(
-        r"^\s*(\d+)\.\s*MOVE:\s*(\S+)\s*\(SAN:\s*([^)]+)\)\s*\|\s*LINE:\s*(.*?)\s*\|\s*REASONING:\s*(.+)$",
+
+    # Primary: MOVE | LINE | WHITE_THREAT | REASONING
+    claim_pattern = re.compile(
+        r"^\s*(\d+)\.\s*MOVE:\s*(\S+)\s*\(SAN:\s*([^)]+)\)\s*\|\s*LINE:\s*(.*?)\s*\|\s*WHITE_THREAT:\s*(\S+)\s*\|\s*REASONING:\s*(.+)$",
         re.MULTILINE,
     )
+    # Fallback 1: MOVE | LINE | REASONING (legacy, one rollout cycle)
+    # Negative lookahead prevents matching new-format lines with WHITE_THREAT
+    line_pattern = re.compile(
+        r"^\s*(\d+)\.\s*MOVE:\s*(\S+)\s*\(SAN:\s*([^)]+)\)\s*\|\s*LINE:\s*((?:(?!\|\s*WHITE_THREAT:).)*?)\s*\|\s*REASONING:\s*(.+)$",
+        re.MULTILINE,
+    )
+    # Fallback 2: MOVE | REASONING (minimal)
     fallback_pattern = re.compile(
         r"^\s*(\d+)\.\s*MOVE:\s*(\S+)\s*\(SAN:\s*([^)]+)\)\s*\|\s*REASONING:\s*(.+)$",
         re.MULTILINE,
     )
 
-    def add_candidate(move_token: str, san: str, reasoning: str, line: str) -> None:
+    def add_candidate(move_token: str, san: str, reasoning: str,
+                      line: str = "", white_threat: str = "") -> None:
         key = (move_token, san)
         if key in seen:
             return
@@ -211,9 +228,18 @@ def parse_candidates(text: str) -> list[dict]:
             "move_token": move_token,
             "san": san,
             "line": line,
+            "white_threat": white_threat,
             "reasoning": reasoning,
         })
 
+    for match in claim_pattern.finditer(text):
+        add_candidate(
+            match.group(2).strip(),
+            match.group(3).strip(),
+            match.group(6).strip(),
+            match.group(4).strip(),
+            match.group(5).strip(),
+        )
     for match in line_pattern.finditer(text):
         add_candidate(
             match.group(2).strip(),
@@ -226,7 +252,6 @@ def parse_candidates(text: str) -> list[dict]:
             match.group(2).strip(),
             match.group(3).strip(),
             match.group(4).strip(),
-            "",
         )
     return candidates[:3]
 
@@ -275,6 +300,94 @@ def find_hanging_pieces(pieces: list[dict], color_name: str) -> list[str]:
         if piece["piece"] != "king" and piece["attackers"] and not piece["defenders"]:
             hanging.append(f"{color_name} {piece['piece']} on {piece['square']}")
     return hanging
+
+
+def _compute_white_threats(board: chess.Board) -> list[str]:
+    """
+    Compute White's most dangerous ideas from the current position.
+    Uses a hypothetical board where it's White's turn to find tactical threats.
+    Returns a list of human-readable threat descriptions.
+    """
+    from perception import get_legal_attackers, get_defenders, PIECE_VALUES, PIECE_NAMES
+
+    threats = []
+    # Create hypothetical board where White moves
+    hypo = board.copy()
+    hypo.turn = chess.WHITE
+
+    # White checks
+    white_checks = []
+    for move in hypo.legal_moves:
+        hypo2 = hypo.copy()
+        hypo2.push(move)
+        if hypo2.is_check():
+            san = hypo.san(move)
+            is_capture = hypo.is_capture(move)
+            is_mate = hypo2.is_checkmate()
+            # What does this check also attack? (fork detection)
+            attacked_black = []
+            to_sq = move.to_square
+            for sq in hypo2.attacks(to_sq):
+                piece = hypo2.piece_at(sq)
+                if piece and piece.color == chess.BLACK and piece.piece_type != chess.KING:
+                    attacked_black.append(f"{PIECE_NAMES[piece.piece_type]} on {chess.square_name(sq)}")
+            if is_mate:
+                threats.append(f"{san} is CHECKMATE")
+            elif attacked_black:
+                threats.append(f"{san} check, also attacks {', '.join(attacked_black)}")
+            elif is_capture:
+                threats.append(f"{san} check with capture")
+            else:
+                white_checks.append(san)
+
+    if white_checks and not any("check" in t.lower() for t in threats):
+        threats.append(f"Checks available: {', '.join(white_checks[:3])}")
+
+    # White captures of undefended Black pieces
+    for move in hypo.legal_moves:
+        if not hypo.is_capture(move):
+            continue
+        target = hypo.piece_at(move.to_square)
+        if not target or target.color != chess.BLACK:
+            continue
+        target_val = PIECE_VALUES.get(target.piece_type, 0)
+        if target_val < 3:
+            continue  # skip pawn captures for brevity
+        defenders = get_defenders(board, move.to_square, chess.BLACK)
+        if not defenders:
+            san = hypo.san(move)
+            threats.append(f"{san} captures undefended {PIECE_NAMES[target.piece_type]}")
+
+    # White knight jumps that attack 2+ Black pieces (fork potential)
+    for move in hypo.legal_moves:
+        mover = hypo.piece_at(move.from_square)
+        if not mover or mover.piece_type != chess.KNIGHT:
+            continue
+        hypo2 = hypo.copy()
+        hypo2.push(move)
+        attacked = []
+        for sq in hypo2.attacks(move.to_square):
+            piece = hypo2.piece_at(sq)
+            if piece and piece.color == chess.BLACK and PIECE_VALUES.get(piece.piece_type, 0) >= 3:
+                attacked.append(f"{PIECE_NAMES[piece.piece_type]} on {chess.square_name(sq)}")
+        if len(attacked) >= 2:
+            san = hypo.san(move)
+            threats.append(f"{san} knight fork on {', '.join(attacked)}")
+
+    # Hanging Black pieces (undefended and capturable)
+    from perception import collect_hanging_pieces
+    hanging = collect_hanging_pieces(board, chess.BLACK, min_value=3)
+    for h in hanging:
+        threats.append(f"{h['piece']} on {h['square']} is undefended (captured by {', '.join(h['attackers'][:2])})")
+
+    # Deduplicate and cap
+    seen = set()
+    unique = []
+    for t in threats:
+        if t not in seen:
+            seen.add(t)
+            unique.append(t)
+    return unique[:6]
 
 
 def find_undefended_high_value(pieces: list[dict], color_name: str) -> list[str]:
@@ -371,6 +484,19 @@ def build_board_brief(board: chess.Board, move_history: list[str] | None = None)
     for note in special:
         lines.append(f"  {note}")
 
+    # WHITE'S MOST DANGEROUS IDEAS — deterministic threats from the current position.
+    # This helps the proposer identify what White wants to do, so it can pick
+    # WHITE_THREAT accurately and avoid walking into known tactical shots.
+    # Note: these are White's threats if it were White's turn (hypothetical).
+    lines.append("")
+    lines.append("WHITE'S MOST DANGEROUS IDEAS (if it were White's turn):")
+    white_ideas = _compute_white_threats(board)
+    if white_ideas:
+        for idea in white_ideas:
+            lines.append(f"  {idea}")
+    else:
+        lines.append("  No immediate tactical threats detected.")
+
     return "\n".join(lines)
 
 
@@ -440,25 +566,81 @@ def post_move(url: str, game_id: str, ply: int, move_uci: str) -> bool:
 # ---------------------------------------------------------------------------
 
 def validate_candidate(board: chess.Board, candidate: dict) -> dict:
+    """Merge move-safety validation + claim verification (LINE + WHITE_THREAT)."""
+    # Step 1: Move-safety validation via cmd_validate
     tried_tokens = []
+    validation = None
     for token in [candidate["move_token"], candidate["san"]]:
         if token in tried_tokens:
             continue
         tried_tokens.append(token)
         validation = cmd_validate(board, token, as_json=True)
         if validation["legal"]:
-            return validation
+            break
 
-    return {
-        "input": candidate["move_token"],
-        "legal": False,
-        "passed": False,
-        "uci": None,
-        "san": candidate["san"],
-        "hard_failures": ["Neither MOVE nor SAN could be parsed as a legal move."],
-        "warnings": [],
-        "explanation": f"{candidate['move_token']} / {candidate['san']} could not be parsed as a legal move.",
-    }
+    if validation is None or not validation["legal"]:
+        return {
+            "input": candidate["move_token"],
+            "legal": False,
+            "passed": False,
+            "uci": None,
+            "san": candidate["san"],
+            "hard_failures": ["Neither MOVE nor SAN could be parsed as a legal move."],
+            "warnings": [],
+            "explanation": f"{candidate['move_token']} / {candidate['san']} could not be parsed as a legal move.",
+        }
+
+    # Step 2: Verify claimed LINE
+    line_str = candidate.get("line", "")
+    line_tokens = line_str.split() if line_str else []
+    if line_tokens:
+        line_result = verify_claimed_line(board, validation["uci"], line_tokens)
+        if line_result["hard_failures"]:
+            for f in line_result["hard_failures"]:
+                validation["hard_failures"].append(f"CLAIM: {f}")
+            validation["passed"] = False
+        for w in line_result.get("warnings", []):
+            validation["warnings"].append(f"CLAIM: {w}")
+        validation["line_verification"] = line_result
+
+    # Step 3: Verify claimed WHITE_THREAT
+    white_threat = candidate.get("white_threat", "")
+    if white_threat and white_threat.lower() not in ("none", "-", "n/a", ""):
+        board_after = board.copy()
+        board_after.push(chess.Move.from_uci(validation["uci"]))
+        threat_result = verify_white_threat(board_after, white_threat)
+        if threat_result["hard_failures"]:
+            for f in threat_result["hard_failures"]:
+                validation["hard_failures"].append(f"CLAIM: {f}")
+            validation["passed"] = False
+        for w in threat_result.get("warnings", []):
+            validation["warnings"].append(f"CLAIM: {w}")
+
+        # If the threat is real but the LINE doesn't address it:
+        # - Severe threat (material_loss >= 2): hard-fail — LINE ignores a crushing reply
+        # - Minor threat: warning only
+        if (threat_result.get("is_real_threat") and line_tokens
+                and not any("CLAIM" in hf for hf in validation["hard_failures"])):
+            if len(line_tokens) >= 2:
+                line_white_reply = line_tokens[1]
+                threat_san = threat_result.get("threat_san", "")
+                if line_white_reply != threat_san and line_white_reply != white_threat:
+                    threat_loss = threat_result.get("material_loss", 0)
+                    msg = (f"CLAIM: LINE assumes White plays '{line_white_reply}' but "
+                           f"WHITE_THREAT '{threat_san}' is a stronger reply (loss: {threat_loss}).")
+                    if threat_loss >= 2:
+                        validation["hard_failures"].append(msg)
+                        validation["passed"] = False
+                    else:
+                        validation["warnings"].append(msg)
+        validation["threat_verification"] = threat_result
+
+    # Recompute explanation after claim checks
+    if validation["hard_failures"]:
+        validation["passed"] = False
+        validation["explanation"] = validation["hard_failures"][0]
+
+    return validation
 
 
 def validate_batch(board: chess.Board, candidates: list[dict]) -> list[dict]:
@@ -498,10 +680,17 @@ def build_retry_failure_text(results: list[dict], extra_reason: str | None = Non
         if not candidate:
             continue
         validation = result["validation"]
-        explanation = validation["explanation"]
-        if validation["hard_failures"]:
-            explanation = " | ".join(validation["hard_failures"])
-        lines.append(f"- {candidate['san']}: REJECTED — {explanation}")
+        # Separate claim failures from tactical/safety failures
+        claim_failures = [f for f in validation.get("hard_failures", []) if f.startswith("CLAIM:")]
+        tactical_failures = [f for f in validation.get("hard_failures", []) if not f.startswith("CLAIM:")]
+        parts = []
+        if tactical_failures:
+            parts.append(f"TACTICAL: {' | '.join(tactical_failures)}")
+        if claim_failures:
+            parts.append(f"CLAIM: {' | '.join(f.removeprefix('CLAIM: ') for f in claim_failures)}")
+        if not parts:
+            parts.append(validation["explanation"])
+        lines.append(f"- {candidate['san']}: REJECTED — {' ; '.join(parts)}")
     return "\n".join(lines)
 
 
