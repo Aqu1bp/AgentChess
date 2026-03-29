@@ -24,6 +24,7 @@ from perception import (
     cmd_validate,
     worst_capture_balance_after_response,
 )
+from opening_book import get_book_move
 
 BACKEND_DIR = Path(__file__).parent
 
@@ -630,6 +631,24 @@ def play_move(url: str, game_state: dict, provider):
         print(f"  Forced: {move}")
         post_thought(url, game_id, ply, "validation", f"Only legal move: {move}", "deciding")
         post_move(url, game_id, ply, move)
+        return
+
+    # --- Opening book branch ---
+    book_result = get_book_move(board)
+    if book_result:
+        book_move = book_result.move
+        opening = book_result.opening_name or "repertoire"
+        print(f"  [BOOK] {book_move.san} ({opening}, {book_move.games} games, conf={book_result.confidence})", flush=True)
+        post_thought(
+            url, game_id, ply, "proposer",
+            f"Opening book: {opening}\nPlaying {book_move.san} ({book_move.uci}) — "
+            f"{book_move.games} master games, confidence {book_result.confidence}.\n"
+            f"Proposer/validator loop skipped (book move).",
+            "proposing",
+        )
+        post_thought(url, game_id, ply, "validation",
+            f"Book move {book_move.san} — skipping validation (trusted repertoire).", "deciding")
+        post_move(url, game_id, ply, book_move.uci)
         return
 
     board_brief = build_board_brief(board, game_state.get("move_history", []))
