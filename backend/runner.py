@@ -201,20 +201,9 @@ def parse_candidates(text: str) -> list[dict]:
     candidates = []
     seen = set()
 
-    # Primary: MOVE | LINE | WHITE_THREAT | REASONING
+    # Required: MOVE | LINE | WHITE_THREAT | REASONING
     claim_pattern = re.compile(
         r"^\s*(\d+)\.\s*MOVE:\s*(\S+)\s*\(SAN:\s*([^)]+)\)\s*\|\s*LINE:\s*(.*?)\s*\|\s*WHITE_THREAT:\s*(\S+)\s*\|\s*REASONING:\s*(.+)$",
-        re.MULTILINE,
-    )
-    # Fallback 1: MOVE | LINE | REASONING (legacy, one rollout cycle)
-    # Negative lookahead prevents matching new-format lines with WHITE_THREAT
-    line_pattern = re.compile(
-        r"^\s*(\d+)\.\s*MOVE:\s*(\S+)\s*\(SAN:\s*([^)]+)\)\s*\|\s*LINE:\s*((?:(?!\|\s*WHITE_THREAT:).)*?)\s*\|\s*REASONING:\s*(.+)$",
-        re.MULTILINE,
-    )
-    # Fallback 2: MOVE | REASONING (minimal)
-    fallback_pattern = re.compile(
-        r"^\s*(\d+)\.\s*MOVE:\s*(\S+)\s*\(SAN:\s*([^)]+)\)\s*\|\s*REASONING:\s*(.+)$",
         re.MULTILINE,
     )
 
@@ -239,19 +228,6 @@ def parse_candidates(text: str) -> list[dict]:
             match.group(6).strip(),
             match.group(4).strip(),
             match.group(5).strip(),
-        )
-    for match in line_pattern.finditer(text):
-        add_candidate(
-            match.group(2).strip(),
-            match.group(3).strip(),
-            match.group(5).strip(),
-            match.group(4).strip(),
-        )
-    for match in fallback_pattern.finditer(text):
-        add_candidate(
-            match.group(2).strip(),
-            match.group(3).strip(),
-            match.group(4).strip(),
         )
     return candidates[:3]
 
@@ -593,7 +569,15 @@ def validate_candidate(board: chess.Board, candidate: dict) -> dict:
     # Step 2: Verify claimed LINE
     line_str = candidate.get("line", "")
     line_tokens = line_str.split() if line_str else []
-    if line_tokens:
+    if not line_tokens:
+        validation["hard_failures"].append("CLAIM: Missing LINE.")
+        validation["passed"] = False
+    elif len(line_tokens) != 3:
+        validation["hard_failures"].append(
+            f"CLAIM: LINE must contain exactly 3 plies, got {len(line_tokens)}."
+        )
+        validation["passed"] = False
+    else:
         line_result = verify_claimed_line(board, validation["uci"], line_tokens)
         if line_result["hard_failures"]:
             for f in line_result["hard_failures"]:
@@ -605,7 +589,10 @@ def validate_candidate(board: chess.Board, candidate: dict) -> dict:
 
     # Step 3: Verify claimed WHITE_THREAT
     white_threat = candidate.get("white_threat", "")
-    if white_threat and white_threat.lower() not in ("none", "-", "n/a", ""):
+    if not white_threat or white_threat.lower() in ("none", "-", "n/a", ""):
+        validation["hard_failures"].append("CLAIM: Missing WHITE_THREAT.")
+        validation["passed"] = False
+    else:
         board_after = board.copy()
         board_after.push(chess.Move.from_uci(validation["uci"]))
         threat_result = verify_white_threat(board_after, white_threat)
@@ -616,23 +603,28 @@ def validate_candidate(board: chess.Board, candidate: dict) -> dict:
         for w in threat_result.get("warnings", []):
             validation["warnings"].append(f"CLAIM: {w}")
 
-        # If the threat is real but the LINE doesn't address it:
-        # - Severe threat (material_loss >= 2): hard-fail — LINE ignores a crushing reply
-        # - Minor threat: warning only
+        # A real claimed threat must appear in the line, and the claimed follow-up
+        # must bring Black back to a non-losing continuation.
         if (threat_result.get("is_real_threat") and line_tokens
                 and not any("CLAIM" in hf for hf in validation["hard_failures"])):
             if len(line_tokens) >= 2:
                 line_white_reply = line_tokens[1]
                 threat_san = threat_result.get("threat_san", "")
                 if line_white_reply != threat_san and line_white_reply != white_threat:
-                    threat_loss = threat_result.get("material_loss", 0)
-                    msg = (f"CLAIM: LINE assumes White plays '{line_white_reply}' but "
-                           f"WHITE_THREAT '{threat_san}' is a stronger reply (loss: {threat_loss}).")
-                    if threat_loss >= 2:
-                        validation["hard_failures"].append(msg)
+                    validation["hard_failures"].append(
+                        f"CLAIM: LINE assumes White plays '{line_white_reply}' but "
+                        f"WHITE_THREAT '{threat_san}' is the claimed critical reply."
+                    )
+                    validation["passed"] = False
+                else:
+                    line_result = validation.get("line_verification", {})
+                    line_outcome = line_result.get("material_outcome")
+                    if line_outcome is not None and line_outcome < 0:
+                        validation["hard_failures"].append(
+                            f"CLAIM: LINE does not neutralize WHITE_THREAT cleanly "
+                            f"(material delta: {line_outcome})."
+                        )
                         validation["passed"] = False
-                    else:
-                        validation["warnings"].append(msg)
         validation["threat_verification"] = threat_result
 
     # Recompute explanation after claim checks

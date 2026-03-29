@@ -8,17 +8,18 @@ import runner
 class RunnerHelperTests(unittest.TestCase):
     def test_parse_candidates_with_line(self):
         text = """CANDIDATES:
-1. MOVE: e7e5 (SAN: e5) | LINE: e5 Nf3 Nc6 | REASONING: central control
-2. MOVE: d7d5 (SAN: d5) | LINE: d5 exd5 Qxd5 | REASONING: challenge center
-3. MOVE: g8f6 (SAN: Nf6) | LINE: Nf6 e5 Nd5 | REASONING: develops knight
+1. MOVE: e7e5 (SAN: e5) | LINE: e5 Nf3 Nc6 | WHITE_THREAT: Nf3 | REASONING: central control
+2. MOVE: d7d5 (SAN: d5) | LINE: d5 exd5 Qxd5 | WHITE_THREAT: exd5 | REASONING: challenge center
+3. MOVE: g8f6 (SAN: Nf6) | LINE: Nf6 e5 Nd5 | WHITE_THREAT: e5 | REASONING: develops knight
 """
 
         result = runner.parse_candidates(text)
 
         self.assertEqual(3, len(result))
         self.assertEqual("e5 Nf3 Nc6", result[0]["line"])
+        self.assertEqual("Nf3", result[0]["white_threat"])
 
-    def test_parse_candidates_falls_back_without_line(self):
+    def test_parse_candidates_rejects_legacy_format(self):
         text = """CANDIDATES:
 1. MOVE: e7e5 (SAN: e5) | REASONING: central control
 2. MOVE: d7d5 (SAN: d5) | REASONING: challenge center
@@ -27,8 +28,7 @@ class RunnerHelperTests(unittest.TestCase):
 
         result = runner.parse_candidates(text)
 
-        self.assertEqual(3, len(result))
-        self.assertEqual("", result[0]["line"])
+        self.assertEqual([], result)
 
     def test_rank_passing_moves_demotes_heavy_warnings(self):
         results = [
@@ -66,15 +66,6 @@ class RunnerHelperTests(unittest.TestCase):
         self.assertEqual("e5", result[1]["white_threat"])
         self.assertEqual("d4", result[2]["white_threat"])
 
-    def test_parse_candidates_legacy_format_has_empty_white_threat(self):
-        text = """CANDIDATES:
-1. MOVE: e7e5 (SAN: e5) | LINE: e5 Nf3 Nc6 | REASONING: central control
-"""
-        result = runner.parse_candidates(text)
-
-        self.assertEqual(1, len(result))
-        self.assertEqual("", result[0].get("white_threat", ""))
-
     def test_validate_candidate_with_illegal_line_fails(self):
         """A candidate whose claimed LINE contains an illegal move should fail."""
         board = chess.Board()
@@ -111,8 +102,8 @@ class RunnerHelperTests(unittest.TestCase):
         # cmd_validate already hard-fails a6 due to fork-evasion analysis
         self.assertFalse(result["passed"])
 
-    def test_validate_candidate_legacy_format_still_works(self):
-        """Legacy format (no white_threat) should still parse and validate."""
+    def test_validate_candidate_requires_claim_fields(self):
+        """Missing LINE / WHITE_THREAT should hard-fail the candidate."""
         board = chess.Board()
         board.push_san("e4")
         candidate = {
@@ -123,8 +114,26 @@ class RunnerHelperTests(unittest.TestCase):
             "reasoning": "test",
         }
         result = runner.validate_candidate(board, candidate)
-        self.assertTrue(result["legal"])
-        # Should pass — e5 is safe, no claim verification triggered
+        self.assertFalse(result["passed"])
+        self.assertIn("CLAIM: Missing LINE.", result["hard_failures"])
+        self.assertIn("CLAIM: Missing WHITE_THREAT.", result["hard_failures"])
+
+    def test_validate_candidate_real_threat_must_be_neutralized(self):
+        """Naming the right WHITE_THREAT is not enough; the line must solve it."""
+        board = chess.Board("r1bqkbnr/pppp1ppp/2n5/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR b KQkq - 3 3")
+        candidate = {
+            "move_token": "d8e7",
+            "san": "Qe7",
+            "line": "Qe7 Qxf7+ Kd8",
+            "white_threat": "Qxf7+",
+            "reasoning": "test",
+        }
+        result = runner.validate_candidate(board, candidate)
+        self.assertFalse(result["passed"])
+        self.assertIn(
+            "CLAIM: LINE does not neutralize WHITE_THREAT cleanly (material delta: -1).",
+            result["hard_failures"],
+        )
 
     def test_build_board_brief_includes_move_history(self):
         board = chess.Board()

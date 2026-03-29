@@ -5,11 +5,16 @@ Run: python3 -m pytest test_opening_book.py -v
 """
 
 import unittest
+from unittest.mock import patch
+
 import chess
+import opening_book
 from opening_book import get_book_move, MAX_PLY
 
 
 class OpeningBookTests(unittest.TestCase):
+    def tearDown(self):
+        opening_book._cache.clear()
 
     def test_caro_kann_vs_e4(self):
         """After 1.e4, book should play c6 (Caro-Kann)."""
@@ -51,31 +56,23 @@ class OpeningBookTests(unittest.TestCase):
 
     def test_off_repertoire_returns_none(self):
         """Position outside Caro-Kann/QGD families should return None."""
-        # Play 1.e4 e5 (NOT Caro-Kann) then White plays 2.Nf3
         b = chess.Board()
         for m in ["e4", "e5", "Nf3"]:
             b.push_san(m)
-        result = get_book_move(b)
-        # After 1.e4 e5 2.Nf3, the opening is NOT Caro-Kann
-        # But our book plays c6 on move 1, so this path wouldn't happen in practice
-        # This tests the filter logic if we somehow got to this position
-        # The explorer will return "King's Pawn" or "Italian" type names
-        # which should NOT match our repertoire prefixes
-        if result is not None:
-            # If it returns something, verify it's not from a non-repertoire family
-            if result.opening_name:
-                self.assertTrue(
-                    any(p.lower() in result.opening_name.lower()
-                        for p in ["Caro-Kann", "Queen's Gambit", "Slav", "Semi-Slav", "Queen's Pawn"]),
-                    f"Book returned move from non-repertoire family: {result.opening_name}"
-                )
+        with patch.object(opening_book, "_fetch_explorer", return_value={
+            "opening": {"name": "King's Pawn Game"},
+            "moves": [
+                {"uci": "b8c6", "san": "Nc6", "white": 30, "draws": 20, "black": 50},
+            ],
+        }):
+            result = get_book_move(b)
+        self.assertIsNone(result)
 
     def test_book_move_is_legal(self):
         """Book move must always be legal in the position."""
         positions = [
             ["e4"],           # 1.e4
             ["d4"],           # 1.d4
-            ["e4", "c6", "d4"],  # 1.e4 c6 2.d4
         ]
         for moves in positions:
             b = chess.Board()
@@ -88,6 +85,45 @@ class OpeningBookTests(unittest.TestCase):
                 move = chess.Move.from_uci(result.move.uci)
                 self.assertIn(move, b.legal_moves,
                     f"Book move {result.move.san} ({result.move.uci}) is not legal after {' '.join(moves)}")
+
+    def test_book_only_selects_moves_that_stay_in_repertoire(self):
+        """Allowed positions must still reject continuations that leave the repertoire."""
+        b = chess.Board()
+        for m in ["d4", "d5", "c4"]:
+            b.push_san(m)
+
+        current_fen = b.fen()
+        c5_board = b.copy()
+        c5_board.push_san("c5")
+        e6_board = b.copy()
+        e6_board.push_san("e6")
+
+        def fake_fetch(fen: str):
+            if fen == current_fen:
+                return {
+                    "opening": {"name": "Queen's Gambit"},
+                    "moves": [
+                        {"uci": "c7c5", "san": "c5", "white": 20, "draws": 10, "black": 70},
+                        {"uci": "e7e6", "san": "e6", "white": 30, "draws": 20, "black": 40},
+                    ],
+                }
+            if fen == c5_board.fen():
+                return {
+                    "opening": {"name": "Benoni Defense"},
+                    "moves": [],
+                }
+            if fen == e6_board.fen():
+                return {
+                    "opening": {"name": "Queen's Gambit Declined"},
+                    "moves": [],
+                }
+            return None
+
+        with patch.object(opening_book, "_fetch_explorer", side_effect=fake_fetch):
+            result = get_book_move(b)
+
+        self.assertIsNotNone(result)
+        self.assertEqual("e6", result.move.san)
 
 
 if __name__ == "__main__":

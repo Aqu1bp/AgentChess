@@ -189,6 +189,19 @@ def _is_in_repertoire(opening_name: Optional[str], board: chess.Board) -> bool:
     return False
 
 
+def _move_keeps_repertoire(board: chess.Board, move: chess.Move) -> bool:
+    """Only keep book moves whose resulting position stays inside the repertoire."""
+    next_board = board.copy()
+    next_board.push(move)
+
+    data = _fetch_explorer(next_board.fen())
+    if data is None:
+        return False
+
+    next_opening_name = _opening_name(data)
+    return _is_in_repertoire(next_opening_name, next_board)
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -251,9 +264,19 @@ def get_book_move(board: chess.Board) -> Optional[BookResult]:
     if not moves:
         return None
 
-    # Filter to legal moves
+    # Filter to legal moves that keep us inside the repertoire after we play them.
     legal_uci = {m.uci() for m in board.legal_moves}
-    moves = [m for m in moves if m.uci in legal_uci]
+    filtered = []
+    for m in moves:
+        if m.uci not in legal_uci:
+            continue
+        try:
+            move = chess.Move.from_uci(m.uci)
+        except ValueError:
+            continue
+        if _move_keeps_repertoire(board, move):
+            filtered.append(m)
+    moves = filtered
     if not moves:
         return None
 
