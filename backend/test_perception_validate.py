@@ -29,10 +29,12 @@ class ValidateMoveTests(unittest.TestCase):
         self.assertEqual(result["san"], "a8=Q+")
 
     def test_castling_is_supported(self):
-        board = chess.Board("r3k2r/8/8/8/8/8/8/R3K2R b KQkq - 0 1")
+        # Use a more realistic position where castling is safe
+        # Standard Italian: 1.e4 e5 2.Nf3 Nc6 3.Bc4 Nf6 4.d3 Be7 — Black can O-O safely
+        board = chess.Board("r1bqk2r/ppppbppp/2n2n2/4p3/2B1P3/3P1N2/PPP2PPP/RNBQK2R b KQkq - 0 4")
         result = cmd_validate(board, "O-O", as_json=True)
         self.assertTrue(result["legal"])
-        self.assertTrue(result["passed"])
+        self.assertTrue(result["passed"], f"O-O should pass in this position: {result['hard_failures']}")
         self.assertEqual(result["uci"], "e8g8")
 
     def test_quiet_trap_reply_is_detected(self):

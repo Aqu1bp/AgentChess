@@ -37,9 +37,9 @@ CORPUS = [
         "id": "game2_oo_rook_loss",
         "fen": "rnbqk2r/pp2bppp/4pn2/1NpP4/5B2/4P3/PPP2PPP/R2QKBNR b KQkq - 0 6",
         "test_move": "O-O",
-        "expected_pass": None,  # gap: currently passes — documents the non-check search gap
+        "expected_pass": False,
         "motif": "non-check-quiet-threat",
-        "note": "O-O allows Nc7 winning Ra8. Currently a warning, should become hard fail after non-check search.",
+        "note": "O-O allows Nc7 creating a hanging rook on a8 (value 5). Now hard-fails.",
     },
     # --- Standard openings after 1.e4 ---
     {

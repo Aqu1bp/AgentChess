@@ -935,6 +935,7 @@ def cmd_validate(board: chess.Board, move_str: str, as_json: bool = False) -> st
     quiet_hostile_replies = []
     hard_failures: list[str] = []
     warnings: list[str] = []
+    _hard_fail_replies: set[str] = set()  # track which replies already generated hard failures
 
     for reply in list(post_move.legal_moves):
         reply_san = post_move.san(reply)
@@ -976,13 +977,18 @@ def cmd_validate(board: chess.Board, move_str: str, as_json: bool = False) -> st
                 )
             continue
 
+        # --- Quiet hostile reply analysis ---
         quiet_threats = []
         severity = 0
         safe_moves = []
+
+        # (a) NEW attacks on the moved piece (ignore pre-existing attackers)
         moved_piece_still_present = reply_board.piece_at(move.to_square)
         if moved_piece_still_present and moved_piece_still_present.color == mover_color:
-            post_reply_attackers = get_legal_attackers(reply_board, move.to_square, enemy_color)
-            if post_reply_attackers:
+            pre_reply_attackers = set(get_legal_attackers(post_move, move.to_square, enemy_color))
+            post_reply_attackers = set(get_legal_attackers(reply_board, move.to_square, enemy_color))
+            new_attackers = post_reply_attackers - pre_reply_attackers
+            if new_attackers:
                 safe_moves = safe_moves_for_piece(reply_board, move.to_square, mover_color)
                 quiet_threats.append(f"attacks the moved piece on {destination}")
                 severity += 3
@@ -993,15 +999,110 @@ def cmd_validate(board: chess.Board, move_str: str, as_json: bool = False) -> st
                 else:
                     warnings.append(f"{reply_san} attacks the moved piece on {destination}.")
 
+        # (b) Non-check fork detection: reply piece attacks 2+ valuable Black pieces
+        reply_piece = reply_board.piece_at(reply.to_square)
+        if reply_piece and reply_piece.color == enemy_color:
+            forked_pieces = []
+            for sq in reply_board.attacks(reply.to_square):
+                target = reply_board.piece_at(sq)
+                if target and target.color == mover_color:
+                    target_val = PIECE_VALUES.get(target.piece_type, 0)
+                    is_king = target.piece_type == chess.KING
+                    if is_king or target_val >= 3:
+                        # Check if target is undefended or under-defended
+                        defenders = get_defenders(reply_board, sq, mover_color)
+                        forked_pieces.append({
+                            "piece": piece_at_label(reply_board, sq),
+                            "value": target_val,
+                            "is_king": is_king,
+                            "defended": len(defenders) > 0,
+                        })
+            if len(forked_pieces) >= 2:
+                # King + major/minor fork
+                has_king = any(p["is_king"] for p in forked_pieces)
+                total_value = sum(p["value"] for p in forked_pieces if not p["is_king"])
+                fork_desc = ", ".join(p["piece"] for p in forked_pieces)
+                quiet_threats.append(f"forks {fork_desc}")
+                severity += total_value
+                if has_king and total_value >= 3:
+                    # King + piece fork — after Black moves king, opponent captures the piece
+                    hard_failures.append(
+                        f"{reply_san} forks {fork_desc}. King must move, losing material."
+                    )
+                elif total_value >= 5 and any(not p["defended"] for p in forked_pieces if not p["is_king"]):
+                    # Two undefended valuable pieces
+                    hard_failures.append(
+                        f"{reply_san} forks {fork_desc} with undefended target(s)."
+                    )
+                else:
+                    warnings.append(f"{reply_san} forks {fork_desc}.")
+
+        # (c) Net material evaluation after quiet reply (2-ply: opponent quiet move → our best response)
+        # Only run for replies with severity > 0 or that are "interesting" (attacks, forks)
+        if not is_check and not reply_capture_label and quiet_threats:
+            post_reply_balance = worst_capture_balance_after_response(reply_board, mover_color)
+            pre_reply_baseline = worst_capture_balance_after_response(post_move, mover_color)
+            net_loss = pre_reply_baseline - post_reply_balance
+            if net_loss >= 2 and reply_san not in _hard_fail_replies:
+                _hard_fail_replies.add(reply_san)
+                hard_failures.append(
+                    f"{reply_san} forces net material loss of {net_loss} beyond baseline."
+                )
+                severity += net_loss
+
+        # (d) New hanging pieces after the reply
         new_hanging = []
         for piece in collect_hanging_pieces(reply_board, mover_color, min_value=3):
             if piece["square"] not in baseline_hanging:
                 new_hanging.append(piece)
         if new_hanging:
             squares = ", ".join(f"{piece['piece']} on {piece['square']}" for piece in new_hanging)
+            max_hanging_value = max(piece["value"] for piece in new_hanging)
             quiet_threats.append(f"creates a new hanging {mover_name} piece: {squares}")
-            severity += max(piece["value"] for piece in new_hanging)
-            warnings.append(f"{reply_san} creates a new hanging {mover_name} piece: {squares}.")
+            severity += max_hanging_value
+
+            # Check if the hanging piece can be saved:
+            # 1. Can the mover move the hanging piece to safety?
+            # 2. If not, after opponent captures it, can the mover recapture equally?
+            is_free_loss = False
+            for h_piece in new_hanging:
+                h_sq = chess.parse_square(h_piece["square"])
+                # Can the piece escape? (mover's turn — check if it has safe moves)
+                escape_moves = safe_moves_for_piece(reply_board, h_sq, mover_color)
+                if escape_moves:
+                    continue  # piece can escape — not a free loss
+
+                # Piece can't escape. After mover passes, can opponent capture it freely?
+                # Simulate: mover does something else, opponent captures the hanging piece
+                # Use worst_capture_balance: if opponent capturing gives a net loss, it's free
+                # But we're at mover's turn. We need to check: on opponent's NEXT turn,
+                # does capturing the hanging piece win material?
+                # Simpler: the piece is hanging (attacked, no defenders, can't escape).
+                # If opponent captures it, mover needs a recapture on that square.
+                # Check: after opponent takes, can mover recapture?
+                capturers = get_legal_attackers(reply_board, h_sq, enemy_color)
+                if capturers:
+                    # Simulate opponent capture
+                    # Use a hypothetical: place enemy turn, capture, check recapture
+                    hypo = reply_board.copy()
+                    hypo.turn = enemy_color
+                    for cap_move in hypo.legal_moves:
+                        if cap_move.to_square == h_sq and hypo.is_capture(cap_move):
+                            cap_board = hypo.copy()
+                            cap_board.push(cap_move)
+                            recapture_bal = best_immediate_recapture_balance(cap_board, mover_color)
+                            if recapture_bal < material_balance(reply_board, mover_color):
+                                is_free_loss = True
+                            break
+
+            if is_free_loss and max_hanging_value >= 5:
+                hard_failures.append(
+                    f"{reply_san} creates a freely capturable {mover_name} piece worth {max_hanging_value}: {squares}."
+                )
+            elif is_free_loss:
+                warnings.append(f"{reply_san} creates a freely capturable {mover_name} piece: {squares}.")
+            else:
+                warnings.append(f"{reply_san} creates a new hanging {mover_name} piece: {squares}.")
 
         if quiet_threats:
             quiet_hostile_replies.append({
