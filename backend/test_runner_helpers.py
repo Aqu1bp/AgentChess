@@ -5,6 +5,14 @@ import chess
 import runner
 
 
+class StubProvider:
+    def __init__(self, response: str):
+        self.response = response
+
+    def call(self, prompt: str) -> str:
+        return self.response
+
+
 class RunnerHelperTests(unittest.TestCase):
     def test_parse_candidates_with_line(self):
         text = """CANDIDATES:
@@ -80,6 +88,101 @@ class RunnerHelperTests(unittest.TestCase):
         self.assertEqual("e5", result[1]["white_threat"])
         self.assertEqual("d4", result[2]["white_threat"])
 
+    def test_parse_critic_choice_choose(self):
+        text = """DECISION: CHOOSE e5
+LINE: e5 Nf3 Nc6
+REASONING: Best balance of development and center control."""
+        result = runner.parse_critic_choice(text)
+        self.assertEqual("CHOOSE", result["decision"])
+        self.assertEqual("e5", result["move"])
+        self.assertEqual("e5 Nf3 Nc6", result["line"])
+
+    def test_parse_critic_choice_override(self):
+        text = """DECISION: OVERRIDE d7d5
+LINE: d5 exd5 Qxd5
+REASONING: More direct central challenge."""
+        result = runner.parse_critic_choice(text)
+        self.assertEqual("OVERRIDE", result["decision"])
+        self.assertEqual("d7d5", result["move"])
+        self.assertEqual("d5 exd5 Qxd5", result["line"])
+
+    def test_apply_critic_choice_chooses_survivor(self):
+        board = chess.Board()
+        board.push_san("e4")
+        results = [
+            {
+                "candidate": {"san": "e5", "move_token": "e7e5", "line": "e5 Nf3 Nc6", "reasoning": "test"},
+                "validation": {"passed": True, "san": "e5", "uci": "e7e5", "warnings": []},
+            },
+            {
+                "candidate": {"san": "c5", "move_token": "c7c5", "line": "c5 Nf3 d6", "reasoning": "test"},
+                "validation": {"passed": True, "san": "c5", "uci": "c7c5", "warnings": []},
+            },
+        ]
+        provider = StubProvider("""DECISION: CHOOSE e5
+LINE: e5 Nf3 Nc6
+REASONING: Most reliable development.""")
+        summary, choice = runner.apply_critic_choice(board, "brief", provider, results)
+        self.assertIn("CHOOSE e5", summary)
+        self.assertEqual("e7e5", choice["move"])
+        self.assertEqual("e5", choice["san"])
+
+    def test_apply_critic_choice_validates_override(self):
+        board = chess.Board()
+        board.push_san("e4")
+        results = [
+            {
+                "candidate": {"san": "e5", "move_token": "e7e5", "line": "e5 Nf3 Nc6", "reasoning": "test"},
+                "validation": {"passed": True, "san": "e5", "uci": "e7e5", "warnings": []},
+            },
+            {
+                "candidate": {"san": "c5", "move_token": "c7c5", "line": "c5 Nf3 d6", "reasoning": "test"},
+                "validation": {"passed": True, "san": "c5", "uci": "c7c5", "warnings": []},
+            },
+        ]
+        provider = StubProvider("""DECISION: OVERRIDE e6
+LINE: e6 d4 d5
+REASONING: Cleaner structure.""")
+        summary, choice = runner.apply_critic_choice(board, "brief", provider, results)
+        self.assertIn("OVERRIDE e6", summary)
+        self.assertEqual("e7e6", choice["move"])
+        self.assertEqual("e6", choice["san"])
+
+    def test_apply_critic_choice_all_failed_still_allows_override(self):
+        board = chess.Board()
+        board.push_san("e4")
+        results = [
+            {
+                "candidate": {"san": "c5", "move_token": "c7c5", "line": "c5 Nf3 d6", "reasoning": "test"},
+                "validation": {
+                    "passed": False,
+                    "san": "c5",
+                    "uci": "c7c5",
+                    "warnings": [],
+                    "hard_failures": ["CLAIM: bad line"],
+                    "explanation": "CLAIM: bad line",
+                },
+            },
+            {
+                "candidate": {"san": "e5", "move_token": "e7e5", "line": "e5 Nf3 Nc6", "reasoning": "test"},
+                "validation": {
+                    "passed": False,
+                    "san": "e5",
+                    "uci": "e7e5",
+                    "warnings": [],
+                    "hard_failures": ["CLAIM: bad line"],
+                    "explanation": "CLAIM: bad line",
+                },
+            },
+        ]
+        provider = StubProvider("""DECISION: OVERRIDE e6
+LINE: e6 Nf3 d5
+REASONING: Solid center.""")
+        summary, choice = runner.apply_critic_choice(board, "brief", provider, results)
+        self.assertIn("OVERRIDE e6", summary)
+        self.assertEqual("e7e6", choice["move"])
+        self.assertEqual("e6", choice["san"])
+
     def test_validate_candidate_with_illegal_line_fails(self):
         """A candidate whose claimed LINE contains an illegal move should fail."""
         board = chess.Board()
@@ -131,6 +234,23 @@ class RunnerHelperTests(unittest.TestCase):
         self.assertFalse(result["passed"])
         self.assertIn("CLAIM: Missing LINE.", result["hard_failures"])
         self.assertIn("CLAIM: Missing WHITE_THREAT.", result["hard_failures"])
+
+    def test_validate_candidate_accepts_longer_line_and_warns(self):
+        board = chess.Board()
+        board.push_san("e4")
+        candidate = {
+            "move_token": "e7e5",
+            "san": "e5",
+            "line": "e5 Nf3 Nc6 Bb5 a6",
+            "white_threat": "Nf3",
+            "reasoning": "test",
+        }
+        result = runner.validate_candidate(board, candidate)
+        self.assertTrue(result["passed"], result["hard_failures"])
+        self.assertIn(
+            "CLAIM: LINE had 5 plies; validated first 3 only.",
+            result["warnings"],
+        )
 
     def test_validate_candidate_minor_loss_against_real_threat_is_warning_only(self):
         """A non-severe threat with a -1 line outcome should warn, not hard-fail."""

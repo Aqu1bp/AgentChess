@@ -1018,7 +1018,7 @@ def cmd_validate(board: chess.Board, move_str: str, as_json: bool = False) -> st
                 quiet_threats.append(f"attacks the moved piece on {destination}")
                 severity += 3
                 if moved_piece_still_present.piece_type not in (chess.PAWN, chess.KING) and not safe_moves:
-                    hard_failures.append(
+                    warnings.append(
                         f"{reply_san} traps the moved piece on {destination} with 0 safe legal moves."
                     )
                 else:
@@ -1057,13 +1057,11 @@ def cmd_validate(board: chess.Board, move_str: str, as_json: bool = False) -> st
                         f"{reply_san} appears to fork {fork_desc}, but the forking piece can be captured immediately."
                     )
                 elif has_king and total_value >= 3:
-                    # King + piece fork — after Black moves king, opponent captures the piece
-                    hard_failures.append(
-                        f"{reply_san} forks {fork_desc}. King must move, losing material."
+                    warnings.append(
+                        f"{reply_san} forks {fork_desc}. King must respond, so follow-up loss is possible."
                     )
                 elif total_value >= 5 and any(not p["defended"] for p in forked_pieces if not p["is_king"]):
-                    # Two undefended valuable pieces
-                    hard_failures.append(
+                    warnings.append(
                         f"{reply_san} forks {fork_desc} with undefended target(s)."
                     )
                 else:
@@ -1127,7 +1125,7 @@ def cmd_validate(board: chess.Board, move_str: str, as_json: bool = False) -> st
                                 is_free_loss = True
                                 break  # found a free win — no need to check more
 
-            if is_free_loss and max_hanging_value >= 5:
+            if is_free_loss and max_hanging_value >= 3:
                 hard_failures.append(
                     f"{reply_san} creates a freely capturable {mover_name} piece worth {max_hanging_value}: {squares}."
                 )

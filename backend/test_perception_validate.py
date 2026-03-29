@@ -41,7 +41,8 @@ class ValidateMoveTests(unittest.TestCase):
         board = chess.Board("4k3/8/2n5/3B4/8/3P4/PP6/6K1 b - - 0 1")
         result = cmd_validate(board, "c6a5", as_json=True)
         self.assertFalse(result["passed"])
-        self.assertIn("b4 traps the moved piece on a5", result["hard_failures"][0])
+        self.assertIn("b4 creates a freely capturable black piece worth 3: black knight on a5.", result["hard_failures"])
+        self.assertTrue(any("b4 traps the moved piece on a5" in item for item in result["warnings"]))
         self.assertEqual(result["quiet_hostile_replies"][0]["san"], "b4")
 
     def test_immediate_mate_reply_is_detected(self):
