@@ -144,6 +144,16 @@ class RunnerHelperTests(unittest.TestCase):
 
         self.assertIn("MOVE HISTORY: 1. d4 d5 2. Nc3", brief)
 
+    def test_build_board_brief_uses_selective_piece_detail(self):
+        board = chess.Board()
+
+        brief = runner.build_board_brief(board, [])
+
+        self.assertIn("Pawn a2", brief)
+        self.assertNotIn("Pawn a2 | attacked by:", brief)
+        self.assertIn("King e1 | attacked by: none | defended by:", brief)
+        self.assertIn("pawn shelter:", brief)
+
 
 if __name__ == "__main__":
     unittest.main()

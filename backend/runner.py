@@ -277,17 +277,32 @@ def parse_batch_critic(text: str) -> dict[str, dict]:
     return results
 
 
+def piece_needs_tactical_detail(piece: dict) -> bool:
+    if piece["piece"] == "king":
+        return True
+    if piece["attackers"]:
+        return True
+    if piece["piece"] in {"queen", "rook", "bishop", "knight"} and not piece["defenders"]:
+        return True
+    return False
+
+
 def describe_piece_lines(title: str, pieces: list[dict]) -> list[str]:
     lines = [title]
     for piece in pieces:
-        attacked_by = ", ".join(piece["attackers"]) or "none"
-        defended_by = ", ".join(piece["defenders"]) or "none"
-        shelter = ""
-        if "pawn_shelter" in piece:
-            shelter = f" | pawn shelter: {', '.join(piece['pawn_shelter'])}"
-        lines.append(
-            f"  {piece['piece'].capitalize()} {piece['square']} | attacked by: {attacked_by} | defended by: {defended_by}{shelter}"
-        )
+        base = f"  {piece['piece'].capitalize()} {piece['square']}"
+        if piece_needs_tactical_detail(piece):
+            details = []
+            attacked_by = ", ".join(piece["attackers"]) or "none"
+            defended_by = ", ".join(piece["defenders"]) or "none"
+            details.append(f"attacked by: {attacked_by}")
+            details.append(f"defended by: {defended_by}")
+            if "pawn_shelter" in piece:
+                shelter = ", ".join(piece["pawn_shelter"]) or "none"
+                details.append(f"pawn shelter: {shelter}")
+            lines.append(base + " | " + " | ".join(details))
+        else:
+            lines.append(base)
     return lines
 
 
