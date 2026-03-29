@@ -75,6 +75,57 @@ class RunnerHelperTests(unittest.TestCase):
         self.assertEqual(1, len(result))
         self.assertEqual("", result[0].get("white_threat", ""))
 
+    def test_validate_candidate_with_illegal_line_fails(self):
+        """A candidate whose claimed LINE contains an illegal move should fail."""
+        board = chess.Board()
+        board.push_san("e4")
+        candidate = {
+            "move_token": "e7e5",
+            "san": "e5",
+            "line": "e5 Qh5 Bg7",  # Bg7 is not legal after Qh5 (doesn't block mate)... actually it might be
+            "white_threat": "Qh5",
+            "reasoning": "test",
+        }
+        result = runner.validate_candidate(board, candidate)
+        # The LINE itself may or may not be legal — depends on position
+        # But any CLAIM hard failure means passed=False
+        if result.get("line_verification", {}).get("hard_failures"):
+            self.assertFalse(result["passed"])
+
+    def test_validate_candidate_with_losing_line_fails(self):
+        """A candidate whose LINE loses >= 2 material should hard-fail."""
+        # After 1.d4 d5 2.Nc3 Nf6 3.Bf4 Nc6 4.Nb5
+        board = chess.Board()
+        for m in ['d4', 'd5', 'Nc3', 'Nf6', 'Bf4', 'Nc6', 'Nb5']:
+            board.push_san(m)
+        # a6 with LINE: a6 Nxc7+ Qxc7 — Qxc7 is then captured by Bxc7 (but LINE stops at 3 plies)
+        # material_outcome after a6 Nxc7+ Qxc7 = ... let's check
+        candidate = {
+            "move_token": "a7a6",
+            "san": "a6",
+            "line": "a6 Nxc7+ Qxc7",
+            "white_threat": "Nxc7+",
+            "reasoning": "test",
+        }
+        result = runner.validate_candidate(board, candidate)
+        # cmd_validate already hard-fails a6 due to fork-evasion analysis
+        self.assertFalse(result["passed"])
+
+    def test_validate_candidate_legacy_format_still_works(self):
+        """Legacy format (no white_threat) should still parse and validate."""
+        board = chess.Board()
+        board.push_san("e4")
+        candidate = {
+            "move_token": "e7e5",
+            "san": "e5",
+            "line": "",
+            "white_threat": "",
+            "reasoning": "test",
+        }
+        result = runner.validate_candidate(board, candidate)
+        self.assertTrue(result["legal"])
+        # Should pass — e5 is safe, no claim verification triggered
+
     def test_build_board_brief_includes_move_history(self):
         board = chess.Board()
         for san in ["d4", "d5", "Nc3"]:

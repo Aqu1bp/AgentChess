@@ -771,7 +771,10 @@ def verify_claimed_line(board: chess.Board, candidate_move_str: str, line_tokens
     material_outcome = mat_after - mat_before
 
     if material_outcome <= -2:
-        warnings.append(f"Claimed LINE loses material (delta: {material_outcome}).")
+        hard_failures.append(
+            f"Claimed LINE loses material (delta: {material_outcome}). "
+            "The proposer's own projected continuation is self-defeating."
+        )
 
     return {
         "valid": True,
