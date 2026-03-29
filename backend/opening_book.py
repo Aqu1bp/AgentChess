@@ -21,7 +21,7 @@ import httpx
 EXPLORER_URL = "https://explorer.lichess.ovh/lichess"
 EXPLORER_TIMEOUT = 3.0
 MIN_GAMES = 50  # only play moves seen in 50+ master games
-MAX_PLY = 24  # hand off to proposer after ply 24 (move 12)
+MAX_PLY = 12  # hand off to proposer after ply 12 (move 6 for each side)
 
 # ---------------------------------------------------------------------------
 # Repertoire filters
@@ -33,16 +33,15 @@ MAX_PLY = 24  # hand off to proposer after ply 24 (move 12)
 
 CARO_KANN_PREFIXES = [
     "Caro-Kann",
-    "Scandinavian",  # 1...d5 shares structural ideas
 ]
 
 QGD_SLAV_PREFIXES = [
-    "Queen's Gambit",  # covers QGD, QGA, and plain "Queen's Gambit"
+    "Queen's Gambit Declined",
+    "Queen's Gambit Accepted",
+    "Queen's Gambit",  # plain "Queen's Gambit" before it specifies a sub-line
     "Slav",
     "Semi-Slav",
     "Queen's Pawn",
-    "London System",
-    "Nimzo-Indian",
 ]
 
 # Explicit first-move responses (before the explorer has opening names)
@@ -109,7 +108,9 @@ def _get_token() -> str:
 
 def _fetch_explorer(fen: str) -> Optional[dict]:
     """Fetch position data from Lichess Explorer API (sync)."""
-    cache_key = fen.split(" ")[0]
+    # Include side-to-move, castling, and en passant in cache key (not just pieces)
+    parts = fen.split(" ")
+    cache_key = " ".join(parts[:4]) if len(parts) >= 4 else fen
     if cache_key in _cache:
         return _cache[cache_key]
 
