@@ -54,6 +54,28 @@ class ValidateMoveTests(unittest.TestCase):
         self.assertFalse(result["passed"])
         self.assertIn("axb4 wins black knight with no immediate equalizing recapture.", result["hard_failures"])
 
+    def test_check_fork_with_losing_evasions_is_detected(self):
+        board = chess.Board()
+        for san in ["d4", "d5", "Nc3", "Nf6", "Bf4", "Nc6", "Nb5"]:
+            board.push_san(san)
+
+        result = cmd_validate(board, "a6", as_json=True)
+
+        self.assertFalse(result["passed"])
+        self.assertIn("Nxc7+", [item["san"] for item in result["opponent_checks"]])
+        self.assertTrue(
+            any("every evasion loses material beyond baseline" in item for item in result["hard_failures"])
+        )
+
+    def test_harmless_check_stays_a_warning(self):
+        board = chess.Board("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1")
+
+        result = cmd_validate(board, "d5", as_json=True)
+
+        self.assertTrue(result["passed"])
+        self.assertIn("Bb5+", [item["san"] for item in result["opponent_checks"]])
+        self.assertFalse(any("every evasion loses material beyond baseline" in item for item in result["hard_failures"]))
+
 
 if __name__ == "__main__":
     unittest.main()

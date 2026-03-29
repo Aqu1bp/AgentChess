@@ -2,7 +2,8 @@
 AgentChess Runner — Proposer + Validator controller.
 
 The LLM proposes three ranked candidate moves from a grounded board brief.
-A deterministic validator checks them in order and the first passing move is played.
+A deterministic validator rejects tactical blunders, then surviving moves are
+ranked with the proposer's order as the primary signal.
 """
 
 import argparse
@@ -16,7 +17,13 @@ from pathlib import Path
 import chess
 import httpx
 
-from perception import cmd_state, cmd_validate
+from perception import (
+    best_evasion_balance_after_check,
+    best_immediate_recapture_balance,
+    cmd_state,
+    cmd_validate,
+    worst_capture_balance_after_response,
+)
 
 BACKEND_DIR = Path(__file__).parent
 
@@ -128,9 +135,9 @@ Rules:
 
 Format EXACTLY:
 CANDIDATES:
-1. MOVE: <uci> (SAN: <san>) | REASONING: <why this is best>
-2. MOVE: <uci> (SAN: <san>) | REASONING: <why this is next>
-3. MOVE: <uci> (SAN: <san>) | REASONING: <why this is third>
+1. MOVE: <uci> (SAN: <san>) | LINE: <move1> <reply1> <move2> | REASONING: <why this is best>
+2. MOVE: <uci> (SAN: <san>) | LINE: <move1> <reply1> <move2> | REASONING: <why this is next>
+3. MOVE: <uci> (SAN: <san>) | LINE: <move1> <reply1> <move2> | REASONING: <why this is third>
 """
 
 
@@ -153,9 +160,28 @@ Rules:
 
 Format EXACTLY:
 CANDIDATES:
-1. MOVE: <uci> (SAN: <san>) | REASONING: <why this avoids the failures>
-2. MOVE: <uci> (SAN: <san>) | REASONING: <why this avoids the failures>
-3. MOVE: <uci> (SAN: <san>) | REASONING: <why this avoids the failures>
+1. MOVE: <uci> (SAN: <san>) | LINE: <move1> <reply1> <move2> | REASONING: <why this avoids the failures>
+2. MOVE: <uci> (SAN: <san>) | LINE: <move1> <reply1> <move2> | REASONING: <why this avoids the failures>
+3. MOVE: <uci> (SAN: <san>) | LINE: <move1> <reply1> <move2> | REASONING: <why this avoids the failures>
+"""
+
+
+CRITIC_PROMPT = """You are WHITE. BLACK just played {move} in this position:
+
+BOARD BRIEF:
+{board_brief}
+
+BLACK'S INTENDED LINE:
+{line}
+
+Find White's BEST response. Look for:
+- Captures that win material
+- Checks that fork pieces
+- Moves that trap or attack multiple pieces
+
+Return EXACTLY:
+WHITE'S BEST REPLY: <san or uci>
+REASONING: <what this achieves>
 """
 
 
@@ -166,24 +192,66 @@ CANDIDATES:
 def parse_candidates(text: str) -> list[dict]:
     candidates = []
     seen = set()
-    pattern = re.compile(
+    line_pattern = re.compile(
+        r"^\s*(\d+)\.\s*MOVE:\s*(\S+)\s*\(SAN:\s*([^)]+)\)\s*\|\s*LINE:\s*(.*?)\s*\|\s*REASONING:\s*(.+)$",
+        re.MULTILINE,
+    )
+    fallback_pattern = re.compile(
         r"^\s*(\d+)\.\s*MOVE:\s*(\S+)\s*\(SAN:\s*([^)]+)\)\s*\|\s*REASONING:\s*(.+)$",
         re.MULTILINE,
     )
-    for match in pattern.finditer(text):
-        move_token = match.group(2).strip()
-        san = match.group(3).strip()
-        reasoning = match.group(4).strip()
+
+    def add_candidate(move_token: str, san: str, reasoning: str, line: str) -> None:
         key = (move_token, san)
         if key in seen:
-            continue
+            return
         seen.add(key)
         candidates.append({
             "move_token": move_token,
             "san": san,
+            "line": line,
             "reasoning": reasoning,
         })
+
+    for match in line_pattern.finditer(text):
+        add_candidate(
+            match.group(2).strip(),
+            match.group(3).strip(),
+            match.group(5).strip(),
+            match.group(4).strip(),
+        )
+    for match in fallback_pattern.finditer(text):
+        add_candidate(
+            match.group(2).strip(),
+            match.group(3).strip(),
+            match.group(4).strip(),
+            "",
+        )
     return candidates[:3]
+
+
+def parse_move_token(board: chess.Board, token: str) -> chess.Move | None:
+    token = (token or "").strip()
+    if not token:
+        return None
+    try:
+        move = chess.Move.from_uci(token)
+        if move in board.legal_moves:
+            return move
+    except ValueError:
+        pass
+    try:
+        return board.parse_san(token)
+    except (chess.InvalidMoveError, chess.IllegalMoveError, chess.AmbiguousMoveError):
+        return None
+
+
+def parse_critic_reply(text: str) -> tuple[str | None, str]:
+    reply_match = re.search(r"WHITE'S BEST REPLY:\s*(.+)", text or "", re.MULTILINE)
+    reasoning_match = re.search(r"REASONING:\s*(.+)", text or "", re.MULTILINE)
+    reply = reply_match.group(1).strip() if reply_match else None
+    reasoning = reasoning_match.group(1).strip() if reasoning_match else ""
+    return reply, reasoning
 
 
 def describe_piece_lines(title: str, pieces: list[dict]) -> list[str]:
@@ -231,7 +299,7 @@ def board_special_notes(board: chess.Board, state: dict) -> list[str]:
     return notes
 
 
-def build_board_brief(board: chess.Board) -> str:
+def build_board_brief(board: chess.Board, move_history: list[str] | None = None) -> str:
     state = cmd_state(board, as_json=True)
     turn = state["turn"].capitalize()
     phase = state["phase"].capitalize()
@@ -251,6 +319,14 @@ def build_board_brief(board: chess.Board) -> str:
         "Castling: " + (", ".join(state["castling"]) if state["castling"] else "none"),
         f"Check status: {'in check' if state['in_check'] else 'not in check'}",
     ]
+    if move_history:
+        pairs = []
+        for i in range(0, len(move_history), 2):
+            n = i // 2 + 1
+            w = move_history[i]
+            b = move_history[i + 1] if i + 1 < len(move_history) else ""
+            pairs.append(f"{n}. {w} {b}".strip())
+        lines.append(f"MOVE HISTORY: {' '.join(pairs)}")
 
     lines.append("")
     lines.extend(describe_piece_lines("WHITE PIECES:", state["white_pieces"]))
@@ -397,11 +473,19 @@ def validate_batch(board: chess.Board, candidates: list[dict]) -> list[dict]:
     return results
 
 
-def choose_passing_move(results: list[dict]) -> dict | None:
-    for result in results:
+def rank_passing_moves(results: list[dict]) -> list[dict]:
+    passing = []
+    for i, result in enumerate(results):
         if result["validation"]["passed"]:
-            return result
-    return None
+            passing.append({**result, "proposer_rank": i})
+    passing.sort(
+        key=lambda result: (
+            1 if len(result["validation"]["warnings"]) >= 3 else 0,
+            result.get("critic_penalty", 0),
+            result["proposer_rank"],
+        )
+    )
+    return passing
 
 
 def build_retry_failure_text(results: list[dict], extra_reason: str | None = None) -> str:
@@ -412,10 +496,82 @@ def build_retry_failure_text(results: list[dict], extra_reason: str | None = Non
         candidate = result.get("candidate")
         if not candidate:
             continue
-        lines.append(
-            f"- {candidate['san']} / {candidate['move_token']}: {result['validation']['explanation']}"
-        )
+        validation = result["validation"]
+        explanation = validation["explanation"]
+        if validation["hard_failures"]:
+            explanation = " | ".join(validation["hard_failures"])
+        lines.append(f"- {candidate['san']}: REJECTED — {explanation}")
     return "\n".join(lines)
+
+
+def build_critic_summary(results: list[dict], label: str) -> str:
+    lines = [label]
+    for result in results:
+        if not result["validation"]["passed"]:
+            continue
+        note = result.get("critic_note")
+        if not note:
+            continue
+        lines.append(f"- {result['validation']['san']}: {note}")
+    return "\n".join(lines)
+
+
+def apply_critic_feedback(board: chess.Board, board_brief: str, provider, results: list[dict]) -> str | None:
+    passing = [result for result in results if result["validation"]["passed"]]
+    if len(passing) < 2:
+        return None
+
+    mover_color = board.turn
+    any_note = False
+    for result in passing:
+        validation = result["validation"]
+        candidate = result["candidate"]
+        board_after = board.copy()
+        board_after.push(chess.Move.from_uci(validation["uci"]))
+
+        baseline = worst_capture_balance_after_response(board_after, mover_color)
+        prompt = CRITIC_PROMPT.format(
+            move=f"{validation['san']} ({validation['uci']})",
+            board_brief=board_brief,
+            line=candidate.get("line") or "No line provided.",
+        )
+        raw = provider.call(prompt)
+        reply_token, reasoning = parse_critic_reply(raw)
+
+        note = "Critic response could not be parsed."
+        penalty = 0
+        if reply_token:
+            reply_move = parse_move_token(board_after, reply_token)
+            if reply_move is None:
+                note = f"Critic suggested {reply_token}, which could not be parsed."
+            else:
+                reply_san = board_after.san(reply_move)
+                reply_board = board_after.copy()
+                reply_board.push(reply_move)
+                if reply_board.is_checkmate():
+                    penalty = 1
+                    note = f"Critic found {reply_san}, which is immediate mate."
+                else:
+                    if reply_board.is_check():
+                        post_reply_balance = best_evasion_balance_after_check(reply_board, mover_color)
+                    else:
+                        post_reply_balance = best_immediate_recapture_balance(reply_board, mover_color)
+                    extra_loss = baseline - post_reply_balance
+                    if extra_loss >= 2:
+                        penalty = 1
+                        note = f"Critic found {reply_san}, worsening material by {extra_loss} beyond baseline."
+                    else:
+                        note = f"Critic suggested {reply_san}, but it does not worsen material beyond baseline."
+                if reasoning:
+                    note = f"{note} {reasoning}"
+
+        result["critic_penalty"] = penalty
+        result["critic_note"] = note
+        any_note = True
+
+    if not any_note:
+        return None
+    return build_critic_summary(results, "Critic review")
 
 
 def deterministic_fallback(board: chess.Board) -> dict:
@@ -476,10 +632,12 @@ def play_move(url: str, game_state: dict, provider):
         post_move(url, game_id, ply, move)
         return
 
-    board_brief = build_board_brief(board)
+    board_brief = build_board_brief(board, game_state.get("move_history", []))
     proposer_prompt = PROPOSER_PROMPT.format(board_brief=board_brief)
+    print("  [1] Proposer...", flush=True)
     proposer_raw = provider.call(proposer_prompt)
     proposer_candidates = parse_candidates(proposer_raw)
+    print(f"      Got {len(proposer_candidates)} candidates: {[c['san'] for c in proposer_candidates]}", flush=True)
 
     post_thought(
         url,
@@ -498,23 +656,37 @@ def play_move(url: str, game_state: dict, provider):
     initial_results = []
     retry_failures = None
     if len(proposer_candidates) == 3:
+        print("  [2] Validating...", flush=True)
         initial_results = validate_batch(board, proposer_candidates)
+        for r in initial_results:
+            v = r["validation"]
+            status = "PASS" if v["passed"] else "FAIL"
+            print(f"      {r['label']}: {status} — {v['explanation'][:80]}", flush=True)
         post_thought(url, game_id, ply, "validation", build_validation_summary(initial_results, "Initial validation"), "validating")
-        passing = choose_passing_move(initial_results)
-        if passing:
-            move = passing["validation"]["uci"]
+        print("  [3] Critic...", flush=True)
+        critic_summary = apply_critic_feedback(board, board_brief, provider, initial_results)
+        if critic_summary:
+            post_thought(url, game_id, ply, "validation", critic_summary, "validating")
+            print(f"      Critic done", flush=True)
+        ranked = rank_passing_moves(initial_results)
+        if ranked:
+            chosen = ranked[0]
+            move = chosen["validation"]["uci"]
+            print(f"  => Playing {chosen['validation']['san']} ({move})", flush=True)
             reason = (
-                f"Playing proposer choice {passing['validation']['san']} ({move}) — first ranked candidate that passed validation."
+                f"Playing proposer choice {chosen['validation']['san']} ({move}) — top surviving candidate after validation."
             )
             post_thought(url, game_id, ply, "validation", reason, "deciding")
             post_move(url, game_id, ply, move)
             return
+        print("  [!] All failed, retrying...", flush=True)
         retry_failures = build_retry_failure_text(initial_results)
     else:
         parse_failure = f"Expected 3 unique candidates, got {len(proposer_candidates)}."
         post_thought(url, game_id, ply, "validation", build_validation_summary([{"label": "parse", "candidate": None, "explanation": parse_failure}], "Initial validation"), "validating")
         retry_failures = parse_failure
 
+    print("  [4] Retry proposer...", flush=True)
     retry_prompt = RETRY_PROMPT.format(board_brief=board_brief, failures=retry_failures)
     retry_raw = provider.call(retry_prompt)
     retry_candidates = [
@@ -534,11 +706,15 @@ def play_move(url: str, game_state: dict, provider):
     if len(retry_candidates) == 3:
         retry_results = validate_batch(board, retry_candidates)
         post_thought(url, game_id, ply, "validation", build_validation_summary(retry_results, "Retry validation"), "validating")
-        passing = choose_passing_move(retry_results)
-        if passing:
-            move = passing["validation"]["uci"]
+        critic_summary = apply_critic_feedback(board, board_brief, provider, retry_results)
+        if critic_summary:
+            post_thought(url, game_id, ply, "validation", critic_summary, "validating")
+        ranked = rank_passing_moves(retry_results)
+        if ranked:
+            chosen = ranked[0]
+            move = chosen["validation"]["uci"]
             reason = (
-                f"Playing retry candidate {passing['validation']['san']} ({move}) — first ranked retry move that passed validation."
+                f"Playing retry candidate {chosen['validation']['san']} ({move}) — top surviving retry move after validation."
             )
             post_thought(url, game_id, ply, "validation", reason, "deciding")
             post_move(url, game_id, ply, move)

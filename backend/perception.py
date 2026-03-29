@@ -331,6 +331,36 @@ def best_immediate_recapture_balance(board: chess.Board, color: chess.Color) -> 
     return best
 
 
+def worst_capture_balance_after_response(board: chess.Board, color: chess.Color) -> int:
+    """
+    Worst balance `color` can be forced into after the side to move captures once,
+    followed by `color`'s best immediate capturing reply.
+    """
+    worst = material_balance(board, color)
+    for move in board.legal_moves:
+        if not board.is_capture(move):
+            continue
+        next_board = board.copy()
+        next_board.push(move)
+        worst = min(worst, best_immediate_recapture_balance(next_board, color))
+    return worst
+
+
+def best_evasion_balance_after_check(board: chess.Board, color: chess.Color) -> int:
+    """
+    Best balance `color` can preserve from a checked position after one legal
+    evasion and the opponent's strongest immediate capture sequence.
+    """
+    best = -10_000
+    found_evasion = False
+    for move in board.legal_moves:
+        found_evasion = True
+        next_board = board.copy()
+        next_board.push(move)
+        best = max(best, worst_capture_balance_after_response(next_board, color))
+    return best if found_evasion else material_balance(board, color)
+
+
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
@@ -764,6 +794,14 @@ def cmd_validate(board: chess.Board, move_str: str, as_json: bool = False) -> st
             opponent_checks.append({"san": reply_san, "uci": reply_uci, "checkmate": is_checkmate})
         if is_check and not is_checkmate:
             warnings.append(f"{reply_san} gives check.")
+            pre_check_baseline = worst_capture_balance_after_response(post_move, mover_color)
+            best_evasion_balance = best_evasion_balance_after_check(reply_board, mover_color)
+            new_material_loss = pre_check_baseline - best_evasion_balance
+            if new_material_loss >= 2:
+                hard_failures.append(
+                    f"{reply_san} check — every evasion loses material beyond baseline "
+                    f"(best case: -{new_material_loss}). Likely fork or tactical shot."
+                )
         if is_checkmate:
             hard_failures.append(f"{reply_san} is immediate checkmate for {enemy_name}.")
 
