@@ -47,12 +47,15 @@ class GeminiProvider:
         if not api_key:
             raise ValueError("GEMINI_API_KEY not found")
 
+        self._api_key = api_key
         self.client = genai.Client(api_key=api_key)
         self.model = model
         self.genai = genai
         self.thinking_budget = thinking_budget
 
     def call(self, prompt: str) -> str:
+        # Fresh client each call to avoid stale socket hangs
+        self.client = self.genai.Client(api_key=self._api_key)
         config = self.genai.types.GenerateContentConfig(
             temperature=0.3,
         )
@@ -122,30 +125,15 @@ class ClaudeProvider:
 # Prompting
 # ---------------------------------------------------------------------------
 
-PROPOSER_PROMPT = """You are BLACK in a human-vs-AI chess game.
+PROPOSER_PROMPT = """You are BLACK. Pick the best 3 moves.
 
-You are given a grounded board brief generated from deterministic board perception.
-Use your chess knowledge: opening patterns, tactical motifs, king safety, development, pawn structure, and long-term plans.
+FEN: {fen}
+Legal moves: {legal_moves}
 
-BOARD BRIEF:
-{board_brief}
-
-Choose the best 3 moves for BLACK and rank them from best to third-best.
-
-Rules:
-- Use the grounded board brief only. Do not invent pieces or squares.
-- Prefer strategically coherent moves, not just short-term tactics.
-- Avoid moves that leave material hanging or walk into obvious tactical shots.
-- WHITE_THREAT must be a single concrete White move you think is most dangerous after your move. Check the WHITE'S MOST DANGEROUS IDEAS section for guidance.
-- LINE must contain at least 3 plies: your move, White's likely reply, your follow-up. All must be legal. Extra plies are allowed, but only the first 3 will be validated.
-- If you are unsure about the UCI, the SAN still needs to be correct.
-- Return exactly 3 ranked moves in the exact format below.
-
-Format EXACTLY:
-CANDIDATES:
-1. MOVE: <uci> (SAN: <san>) | LINE: <black_move> <white_reply> <black_followup> | WHITE_THREAT: <white_move_san> | REASONING: <why this is best>
-2. MOVE: <uci> (SAN: <san>) | LINE: <black_move> <white_reply> <black_followup> | WHITE_THREAT: <white_move_san> | REASONING: <why this is next>
-3. MOVE: <uci> (SAN: <san>) | LINE: <black_move> <white_reply> <black_followup> | WHITE_THREAT: <white_move_san> | REASONING: <why this is third>
+Format:
+1. <move> — <reason>
+2. <move> — <reason>
+3. <move> — <reason>
 """
 
 
@@ -153,17 +141,17 @@ CRITIC_PROMPT = """You are BLACK's final chooser.
 
 {critic_mode}
 
-BOARD BRIEF:
-{board_brief}
+FEN: {fen}
+Legal moves: {legal_moves}
 
-CANDIDATE CONTEXT:
+BOARD FACTS:
+{board_facts}
+
+CANDIDATES:
 {candidates_detail}
 
-Rules:
-- Do not restart the whole analysis.
-- Prefer a listed candidate if one is clearly best.
-- Only override if the candidates miss a clearly stronger move.
-- Be concrete: give one short line and one short reason.
+Pick the best move. Check BOARD FACTS before claiming any piece is undefended.
+Override only if candidates miss something clearly stronger.
 
 Return EXACTLY:
 DECISION: <CHOOSE|OVERRIDE> <san-or-uci>
@@ -177,37 +165,29 @@ REASONING: <short why>
 # ---------------------------------------------------------------------------
 
 def parse_candidates(text: str) -> list[dict]:
+    """Parse minimal proposer format: '1. <move> — <reason>'."""
     candidates = []
     seen = set()
 
-    # Required: MOVE | LINE | WHITE_THREAT | REASONING
-    claim_pattern = re.compile(
-        r"^\s*(\d+)\.\s*MOVE:\s*(\S+)\s*\(SAN:\s*([^)]+)\)\s*\|\s*LINE:\s*(.*?)\s*\|\s*WHITE_THREAT:\s*(\S+)\s*\|\s*REASONING:\s*(.+)$",
+    simple_pattern = re.compile(
+        r"^\s*(\d+)\.\s*\*{0,2}(\S+?)\*{0,2}\s*[—-]+\s*(.+)$",
         re.MULTILINE,
     )
 
-    def add_candidate(move_token: str, san: str, reasoning: str,
-                      line: str = "", white_threat: str = "") -> None:
-        key = (move_token, san)
-        if key in seen:
-            return
-        seen.add(key)
+    for match in simple_pattern.finditer(text):
+        move_token = match.group(2).strip()
+        reasoning = match.group(3).strip()
+        if move_token in seen:
+            continue
+        seen.add(move_token)
         candidates.append({
             "move_token": move_token,
-            "san": san,
-            "line": line,
-            "white_threat": white_threat,
+            "san": move_token,
+            "line": "",
+            "white_threat": "",
             "reasoning": reasoning,
         })
 
-    for match in claim_pattern.finditer(text):
-        add_candidate(
-            match.group(2).strip(),
-            match.group(3).strip(),
-            match.group(6).strip(),
-            match.group(4).strip(),
-            match.group(5).strip(),
-        )
     return candidates[:3]
 
 
@@ -283,6 +263,33 @@ def find_hanging_pieces(pieces: list[dict], color_name: str) -> list[str]:
         if piece["piece"] != "king" and piece["attackers"] and not piece["defenders"]:
             hanging.append(f"{color_name} {piece['piece']} on {piece['square']}")
     return hanging
+
+
+def _build_board_facts(board: chess.Board) -> str:
+    """Compact piece list with attackers/defenders for each piece."""
+    from perception import get_legal_attackers, get_defenders, PIECE_VALUES, PIECE_NAMES
+    lines = []
+    for color, color_name in [(chess.WHITE, "White"), (chess.BLACK, "Black")]:
+        enemy = not color
+        pieces = []
+        for pt in [chess.KING, chess.QUEEN, chess.ROOK, chess.BISHOP, chess.KNIGHT, chess.PAWN]:
+            for sq in sorted(board.pieces(pt, color)):
+                name = f"{PIECE_NAMES[pt].capitalize()} {chess.square_name(sq)}"
+                attackers = get_legal_attackers(board, sq, enemy)
+                defenders = get_defenders(board, sq, color)
+                atk = [f"{PIECE_NAMES[board.piece_at(a).piece_type]}" for a in attackers if board.piece_at(a)] if attackers else []
+                dfn = [f"{PIECE_NAMES[board.piece_at(d).piece_type]}" for d in defenders if board.piece_at(d)] if defenders else []
+                if atk or dfn:
+                    parts = []
+                    if atk:
+                        parts.append(f"atk:{','.join(atk)}")
+                    if dfn:
+                        parts.append(f"def:{','.join(dfn)}")
+                    pieces.append(f"{name} [{' '.join(parts)}]")
+                else:
+                    pieces.append(name)
+        lines.append(f"{color_name}: {'; '.join(pieces)}")
+    return "\n".join(lines)
 
 
 def _compute_white_threats(board: chess.Board) -> list[str]:
@@ -586,13 +593,10 @@ def validate_candidate(board: chess.Board, candidate: dict) -> dict:
             "explanation": f"{candidate['move_token']} / {candidate['san']} could not be parsed as a legal move.",
         }
 
-    # Step 2: Verify claimed LINE
+    # Step 2: Verify claimed LINE (only if provided — minimal proposer skips this)
     line_str = candidate.get("line", "")
     line_tokens = line_str.split() if line_str else []
-    if not line_tokens:
-        validation["hard_failures"].append("CLAIM: Missing LINE.")
-        validation["passed"] = False
-    elif len(line_tokens) < 3:
+    if line_tokens and len(line_tokens) < 3:
         validation["hard_failures"].append(
             f"CLAIM: LINE must contain at least 3 plies, got {len(line_tokens)}."
         )
@@ -612,11 +616,9 @@ def validate_candidate(board: chess.Board, candidate: dict) -> dict:
         validation["line_verification"] = line_result
 
     # Step 3: Verify claimed WHITE_THREAT
+    # Step 3: Verify claimed WHITE_THREAT (only if provided)
     white_threat = candidate.get("white_threat", "")
-    if not white_threat or white_threat.lower() in ("none", "-", "n/a", ""):
-        validation["hard_failures"].append("CLAIM: Missing WHITE_THREAT.")
-        validation["passed"] = False
-    else:
+    if white_threat and white_threat.lower() not in ("none", "-", "n/a", ""):
         board_after = board.copy()
         board_after.push(chess.Move.from_uci(validation["uci"]))
         threat_result = verify_white_threat(board_after, white_threat)
@@ -753,7 +755,7 @@ def find_result_by_choice_token(board: chess.Board, passing: list[dict], token: 
     return None
 
 
-def apply_critic_choice(board: chess.Board, board_brief: str, provider, results: list[dict]) -> tuple[str | None, dict | None]:
+def apply_critic_choice(board: chess.Board, provider, results: list[dict]) -> tuple[str | None, dict | None]:
     """Single LLM call to choose among survivors or propose one validated override."""
     passing = [result for result in results if result["validation"]["passed"]]
     if not results:
@@ -789,9 +791,13 @@ def apply_critic_choice(board: chess.Board, board_brief: str, provider, results:
                 f"LINE: {line} | REASONING: {reasoning} | REJECTED: {failures}"
             )
 
+    legal_moves_san = [board.san(m) for m in board.legal_moves]
+    board_facts = _build_board_facts(board)
     prompt = CRITIC_PROMPT.format(
         critic_mode=critic_mode,
-        board_brief=board_brief,
+        fen=board.fen(),
+        legal_moves=", ".join(legal_moves_san),
+        board_facts=board_facts,
         candidates_detail="\n".join(detail_lines),
     )
     raw = provider.call(prompt)
@@ -928,8 +934,14 @@ def play_move(url: str, game_state: dict, proposer_provider, critic_provider):
         post_move(url, game_id, ply, book_move.uci)
         return
 
-    board_brief = build_board_brief(board, game_state.get("move_history", []))
-    proposer_prompt = PROPOSER_PROMPT.format(board_brief=board_brief)
+    fen = board.fen()
+    legal_moves_san = [board.san(m) for m in board.legal_moves]
+    board_facts = _build_board_facts(board)
+
+    proposer_prompt = PROPOSER_PROMPT.format(
+        fen=fen,
+        legal_moves=", ".join(legal_moves_san),
+    )
     print("  [1] Proposer...", flush=True)
     proposer_raw = proposer_provider.call(proposer_prompt)
     proposer_candidates = parse_candidates(proposer_raw)
@@ -940,7 +952,7 @@ def play_move(url: str, game_state: dict, proposer_provider, critic_provider):
         game_id,
         ply,
         "proposer",
-        f"BOARD BRIEF:\n{board_brief}\n\nPROPOSER RESPONSE:\n{proposer_raw or 'No response.'}",
+        f"PROPOSER RESPONSE:\n{proposer_raw or 'No response.'}",
         "proposing",
     )
 
@@ -965,7 +977,7 @@ def play_move(url: str, game_state: dict, proposer_provider, critic_provider):
             return
         else:
             print("  [3] Critic...", flush=True)
-            critic_summary, critic_choice = apply_critic_choice(board, board_brief, critic_provider, initial_results)
+            critic_summary, critic_choice = apply_critic_choice(board, critic_provider, initial_results)
             if critic_summary:
                 post_thought(url, game_id, ply, "validation", critic_summary, "validating")
                 print(f"      Critic done", flush=True)
@@ -982,6 +994,20 @@ def play_move(url: str, game_state: dict, proposer_provider, critic_provider):
     else:
         parse_failure = f"Expected 3 unique candidates, got {len(proposer_candidates)}."
         post_thought(url, game_id, ply, "validation", build_validation_summary([{"label": "parse", "candidate": None, "explanation": parse_failure}], "Initial validation"), "validating")
+        # Still try critic rescue with whatever we have
+        if proposer_candidates:
+            print("  [3] Critic rescue (parse issue)...", flush=True)
+            partial_results = validate_batch(board, proposer_candidates)
+            critic_summary, critic_choice = apply_critic_choice(board, critic_provider, partial_results)
+            if critic_summary:
+                post_thought(url, game_id, ply, "validation", critic_summary, "validating")
+            if critic_choice:
+                move = critic_choice["move"]
+                san = critic_choice["san"]
+                reason = f"Playing critic {critic_choice['source'].replace('_', ' ')} {san} ({move}). {critic_choice['reason']}"
+                post_thought(url, game_id, ply, "validation", reason, "deciding")
+                post_move(url, game_id, ply, move)
+                return
 
     fallback = deterministic_fallback(board)
     post_thought(url, game_id, ply, "validation", fallback["reason"], "deciding")

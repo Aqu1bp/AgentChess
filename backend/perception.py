@@ -998,11 +998,7 @@ def cmd_validate(board: chess.Board, move_str: str, as_json: bool = False) -> st
                 "free_win": free_win,
             })
             if free_win:
-                message = f"{reply_san} wins {reply_capture_label} with no immediate equalizing recapture."
-                if reply_capture_value >= 5:
-                    hard_failures.append(message)
-                else:
-                    warnings.append(message)
+                warnings.append(f"{reply_san} wins {reply_capture_label} with no immediate equalizing recapture.")
             continue
 
         # --- Quiet hostile reply analysis ---
