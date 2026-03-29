@@ -52,6 +52,20 @@ class RunnerHelperTests(unittest.TestCase):
         self.assertEqual("e6", ranked[0]["candidate"]["san"])
         self.assertEqual("a6", ranked[1]["candidate"]["san"])
 
+    def test_should_skip_critic_for_clean_top_choice(self):
+        results = [
+            {"validation": {"passed": True, "warnings": []}},
+            {"validation": {"passed": True, "warnings": ["soft note"]}},
+        ]
+        self.assertTrue(runner.should_skip_critic(results))
+
+    def test_should_not_skip_critic_when_top_choice_has_warnings(self):
+        results = [
+            {"validation": {"passed": True, "warnings": ["soft note"]}},
+            {"validation": {"passed": True, "warnings": []}},
+        ]
+        self.assertFalse(runner.should_skip_critic(results))
+
     def test_parse_candidates_with_white_threat(self):
         text = """CANDIDATES:
 1. MOVE: d7d5 (SAN: d5) | LINE: d5 exd5 Qxd5 | WHITE_THREAT: exd5 | REASONING: central challenge
@@ -118,8 +132,8 @@ class RunnerHelperTests(unittest.TestCase):
         self.assertIn("CLAIM: Missing LINE.", result["hard_failures"])
         self.assertIn("CLAIM: Missing WHITE_THREAT.", result["hard_failures"])
 
-    def test_validate_candidate_real_threat_must_be_neutralized(self):
-        """Naming the right WHITE_THREAT is not enough; the line must solve it."""
+    def test_validate_candidate_minor_loss_against_real_threat_is_warning_only(self):
+        """A non-severe threat with a -1 line outcome should warn, not hard-fail."""
         board = chess.Board("r1bqkbnr/pppp1ppp/2n5/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR b KQkq - 3 3")
         candidate = {
             "move_token": "d8e7",
@@ -129,10 +143,26 @@ class RunnerHelperTests(unittest.TestCase):
             "reasoning": "test",
         }
         result = runner.validate_candidate(board, candidate)
-        self.assertFalse(result["passed"])
+        self.assertTrue(result["passed"], result["hard_failures"])
         self.assertIn(
             "CLAIM: LINE does not neutralize WHITE_THREAT cleanly (material delta: -1).",
-            result["hard_failures"],
+            result["warnings"],
+        )
+
+    def test_validate_candidate_non_severe_threat_mismatch_is_warning_only(self):
+        board = chess.Board("r1bqkbnr/pppp1ppp/2n5/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR b KQkq - 3 3")
+        candidate = {
+            "move_token": "d8e7",
+            "san": "Qe7",
+            "line": "Qe7 Qh4 Nf6",
+            "white_threat": "Qxf7+",
+            "reasoning": "test",
+        }
+        result = runner.validate_candidate(board, candidate)
+        self.assertTrue(result["passed"], result["hard_failures"])
+        self.assertTrue(
+            any("LINE assumes White plays 'Qh4' but WHITE_THREAT 'Qxf7+' is the claimed critical reply." in item
+                for item in result["warnings"])
         )
 
     def test_build_board_brief_includes_move_history(self):

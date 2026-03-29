@@ -90,6 +90,17 @@ class ValidateMoveTests(unittest.TestCase):
             any("forking piece can be captured immediately" in item for item in result["warnings"])
         )
 
+    def test_equal_pawn_recap_sequence_is_not_a_hard_failure(self):
+        board = chess.Board("4k3/8/8/2p5/3P4/8/8/3QK3 b - - 0 1")
+
+        result = cmd_validate(board, "cxd4", as_json=True)
+
+        self.assertTrue(result["passed"], result["hard_failures"])
+        self.assertEqual([], result["hard_failures"])
+        self.assertTrue(
+            any("Qxd4 wins black pawn with no immediate equalizing recapture." in item for item in result["warnings"])
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

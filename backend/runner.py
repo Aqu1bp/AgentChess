@@ -646,21 +646,34 @@ def validate_candidate(board: chess.Board, candidate: dict) -> dict:
             if len(line_tokens) >= 2:
                 line_white_reply = line_tokens[1]
                 threat_san = threat_result.get("threat_san", "")
+                threat_material_loss = threat_result.get("material_loss", 0)
+                severe_threat = (
+                    "CHECKMATE" in threat_result.get("explanation", "")
+                    or threat_material_loss >= 2
+                )
                 if line_white_reply != threat_san and line_white_reply != white_threat:
-                    validation["hard_failures"].append(
+                    message = (
                         f"CLAIM: LINE assumes White plays '{line_white_reply}' but "
                         f"WHITE_THREAT '{threat_san}' is the claimed critical reply."
                     )
-                    validation["passed"] = False
+                    if severe_threat:
+                        validation["hard_failures"].append(message)
+                        validation["passed"] = False
+                    else:
+                        validation["warnings"].append(message)
                 else:
                     line_result = validation.get("line_verification", {})
                     line_outcome = line_result.get("material_outcome")
                     if line_outcome is not None and line_outcome < 0:
-                        validation["hard_failures"].append(
+                        message = (
                             f"CLAIM: LINE does not neutralize WHITE_THREAT cleanly "
                             f"(material delta: {line_outcome})."
                         )
-                        validation["passed"] = False
+                        if severe_threat or line_outcome <= -2:
+                            validation["hard_failures"].append(message)
+                            validation["passed"] = False
+                        else:
+                            validation["warnings"].append(message)
         validation["threat_verification"] = threat_result
 
     # Recompute explanation after claim checks
@@ -697,6 +710,18 @@ def rank_passing_moves(results: list[dict]) -> list[dict]:
         )
     )
     return passing
+
+
+def should_skip_critic(results: list[dict]) -> bool:
+    """
+    Skip the critic when the proposer's top-ranked candidate already passes cleanly.
+    The critic is most useful as a tie-breaker among ambiguous survivors, not as a
+    mandatory extra call when the first choice is already clean.
+    """
+    if not results:
+        return False
+    top = results[0]["validation"]
+    return top["passed"] and not top["warnings"]
 
 
 def build_retry_failure_text(results: list[dict], extra_reason: str | None = None) -> str:
@@ -918,11 +943,14 @@ def play_move(url: str, game_state: dict, provider):
             status = "PASS" if v["passed"] else "FAIL"
             print(f"      {r['label']}: {status} — {v['explanation'][:80]}", flush=True)
         post_thought(url, game_id, ply, "validation", build_validation_summary(initial_results, "Initial validation"), "validating")
-        print("  [3] Critic...", flush=True)
-        critic_summary = apply_critic_feedback(board, board_brief, provider, initial_results)
-        if critic_summary:
-            post_thought(url, game_id, ply, "validation", critic_summary, "validating")
-            print(f"      Critic done", flush=True)
+        if should_skip_critic(initial_results):
+            print("  [3] Critic skipped — top proposer choice passed cleanly", flush=True)
+        else:
+            print("  [3] Critic...", flush=True)
+            critic_summary = apply_critic_feedback(board, board_brief, provider, initial_results)
+            if critic_summary:
+                post_thought(url, game_id, ply, "validation", critic_summary, "validating")
+                print(f"      Critic done", flush=True)
         ranked = rank_passing_moves(initial_results)
         if ranked:
             chosen = ranked[0]
@@ -961,9 +989,12 @@ def play_move(url: str, game_state: dict, provider):
     if len(retry_candidates) == 3:
         retry_results = validate_batch(board, retry_candidates)
         post_thought(url, game_id, ply, "validation", build_validation_summary(retry_results, "Retry validation"), "validating")
-        critic_summary = apply_critic_feedback(board, board_brief, provider, retry_results)
-        if critic_summary:
-            post_thought(url, game_id, ply, "validation", critic_summary, "validating")
+        if should_skip_critic(retry_results):
+            print("  [5] Critic skipped on retry — top proposer choice passed cleanly", flush=True)
+        else:
+            critic_summary = apply_critic_feedback(board, board_brief, provider, retry_results)
+            if critic_summary:
+                post_thought(url, game_id, ply, "validation", critic_summary, "validating")
         ranked = rank_passing_moves(retry_results)
         if ranked:
             chosen = ranked[0]
